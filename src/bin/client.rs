@@ -1,43 +1,63 @@
 use anyhow::Result;
-use crossterm::event::{self, Event};
+use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use ratatui::{
     layout::{Constraint, Direction, Layout},
     symbols::border,
-    text::Line,
-    widgets::Block,
+    text::{Line, Text},
+    widgets::{Block, Paragraph},
     DefaultTerminal, Frame,
 };
 
+#[derive(Default)]
+struct State {
+    pending_chars: Vec<char>,
+}
+
 fn main() -> Result<()> {
     let terminal = ratatui::init();
-    let result = run(terminal);
+    let mut state = State::default();
+    let result = run(terminal, &mut state);
     ratatui::restore();
     result
 }
 
-fn run(mut terminal: DefaultTerminal) -> Result<()> {
+fn run(mut terminal: DefaultTerminal, state: &mut State) -> Result<()> {
     loop {
-        terminal.draw(render)?;
-        if matches!(event::read()?, Event::Key(_)) {
-            break Ok(());
+        terminal.draw(|frame| render(frame, state))?;
+        match event::read()? {
+            Event::Key(e)
+                if e.code == KeyCode::Char('q')
+                    || (e.code == KeyCode::Char('c') && e.modifiers == KeyModifiers::CONTROL) =>
+            {
+                break Ok(())
+            }
+            Event::Key(event::KeyEvent {
+                code: KeyCode::Char(c),
+                ..
+            }) => state.pending_chars.push(c),
+            _ => continue,
         }
     }
 }
 
-fn render(frame: &mut Frame) {
+fn render(frame: &mut Frame, state: &mut State) {
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints(vec![Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(frame.area());
 
-    let diff = {
-        let title = Line::from(" Welcome to client (diff) ");
-        Block::bordered().title(title).border_set(border::PLAIN)
+    {
+        let title = Line::from(" Welcome to diff-client (press q to quit) ");
+        let block = Block::bordered().title(title).border_set(border::PLAIN);
+        let text = Text::from(vec![Line::from(format!("{:?}", state.pending_chars))]);
+        let paragraph = Paragraph::new(text).centered().block(block);
+
+        frame.render_widget(paragraph, layout[0])
     };
-    let metadata = {
-        let title = Line::from(" Welcome to client (metadata) ");
-        Block::bordered().title(title).border_set(border::PLAIN)
+    {
+        let title = Line::from(" Welcome to metadata-client (press q to quit) ");
+        let block = Block::bordered().title(title).border_set(border::PLAIN);
+
+        frame.render_widget(block, layout[1]);
     };
-    frame.render_widget(diff, layout[0]);
-    frame.render_widget(metadata, layout[1]);
 }
