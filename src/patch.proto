@@ -1,0 +1,8 @@
+syntax = "proto3";
+
+package patchpal;
+
+message Patch {
+	string patch = 1;
+	string metadata = 2;
+}

@@ -6,4 +6,13 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.97"
 crossterm = "0.28.1"
+log = "0.4.26"
 ratatui = "0.29.0"
+tokio-tungstenite = "0.26.2"
+futures-util = { version = "0.3.28", default-features = false, features = ["sink", "std"] }
+tokio = { version = "1.27.0", default-features = false, features = ["io-std", "macros", "net", "rt-multi-thread", "time"] }
+futures-channel = "0.3.31"
+prost = "0.13.5"
+
+[build-dependencies]
+prost-build = "0.13.0"
