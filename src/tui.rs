@@ -33,6 +33,7 @@ impl App {
             terminal.draw(|frame| self.draw(frame))?;
             self.handle_events(rx).await?;
         }
+        ratatui::restore();
         Ok(())
     }
 
@@ -96,28 +97,51 @@ impl App {
 
 impl Widget for &App {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let title = Line::from(" Counter App Tutorial ".bold());
+        // PERF: would prefer not to recreate this each render
+        let patch = self
+            .active_patch
+            .as_ref()
+            .map(|p| patch::Patch::from_single(&p.patch).unwrap());
+
+        let title = match &patch {
+            None => Line::from(" Patchpal (waiting..) ".bold()),
+            Some(patch) => Line::from(vec![
+                " From:".into(),
+                format!(" {} ", patch.old.path.clone()).red().bold(),
+                "To:".into(),
+                format!(" {} ", patch.new.path.clone()).green().bold(),
+            ]),
+        };
+
+        // (1/1) Stage this hunk [y,n,q,a,d,e,?]?
         let instructions = Line::from(vec![
-            " Decrement ".into(),
-            "<Left>".blue().bold(),
-            " Increment ".into(),
-            "<Right>".blue().bold(),
-            " Quit ".into(),
-            "<Q> ".blue().bold(),
+            " Stage this patch ".into(),
+            "[".into(),
+            // yes
+            "y".light_green().bold(),
+            "es,".into(),
+            // no
+            "n".light_red().bold(),
+            "o,".into(),
+            // all
+            "a".green().bold(),
+            "ll,".into(),
+            // done
+            "d".red().bold(),
+            "one,".into(),
+            // quit
+            "q".blue().bold(),
+            "uit".into(),
+            "] ".into(),
         ]);
+
         let block = Block::bordered()
             .title(title.centered())
             .title_bottom(instructions.centered())
             .border_set(border::THICK);
 
-        let mut text = Text::from(vec![Line::from(vec![
-            "Value: ".into(),
-            self.counter.to_string().yellow(),
-        ])]);
-
-        if let Some(patch) = &self.active_patch {
-            // PERF: would prefer not to recreate this each render
-            let patch = patch::Patch::from_single(&patch.patch).unwrap();
+        let mut text = Text::from(vec![]);
+        if let Some(patch) = patch {
             let (old_path, new_path) = (patch.old.path.into_owned(), patch.new.path.into_owned());
             let (mut old_content, mut new_content) = (
                 vec![Line::from(vec!["Old: ".into(), old_path.red()])],
@@ -137,9 +161,6 @@ impl Widget for &App {
             text.lines.append(&mut new_content);
         }
 
-        Paragraph::new(text)
-            .centered()
-            .block(block)
-            .render(area, buf);
+        Paragraph::new(text).block(block).render(area, buf);
     }
 }
