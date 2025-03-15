@@ -18,6 +18,7 @@ use crate::models::patchpal::Patch;
 #[derive(Debug, Default)]
 pub struct App {
     counter: u8,
+    active_patch: Option<Patch>,
     exit: bool,
 }
 
@@ -59,7 +60,8 @@ impl App {
             },
             patch = rx.recv() => {
                 if let Some(patch) = patch {
-                    info!("Recvd patch w/ body: {}", patch.metadata)
+                    info!("Recvd patch w/ metadata: {}", patch.metadata);
+                    self.handle_patch_event(patch);
                 }
             },
         }
@@ -73,6 +75,10 @@ impl App {
             KeyCode::Right => self.increment_counter(),
             _ => {}
         }
+    }
+
+    fn handle_patch_event(&mut self, patch: Patch) {
+        self.active_patch = Some(patch);
     }
 
     fn exit(&mut self) {
@@ -104,12 +110,34 @@ impl Widget for &App {
             .title_bottom(instructions.centered())
             .border_set(border::THICK);
 
-        let counter_text = Text::from(vec![Line::from(vec![
+        let mut text = Text::from(vec![Line::from(vec![
             "Value: ".into(),
             self.counter.to_string().yellow(),
         ])]);
 
-        Paragraph::new(counter_text)
+        if let Some(patch) = &self.active_patch {
+            // PERF: would prefer not to recreate this each render
+            let patch = patch::Patch::from_single(&patch.patch).unwrap();
+            let (old_path, new_path) = (patch.old.path.into_owned(), patch.new.path.into_owned());
+            let (mut old_content, mut new_content) = (
+                vec![Line::from(vec!["Old: ".into(), old_path.red()])],
+                vec![Line::from(vec!["New: ".into(), new_path.green()])],
+            );
+            for hunk in patch.hunks {
+                for line in hunk.lines {
+                    match line {
+                        patch::Line::Add(l) => new_content.push(Line::from(l.green())),
+                        patch::Line::Remove(l) => old_content.push(Line::from(l.red())),
+                        patch::Line::Context(_) => {}
+                    }
+                }
+            }
+
+            text.lines.append(&mut old_content);
+            text.lines.append(&mut new_content);
+        }
+
+        Paragraph::new(text)
             .centered()
             .block(block)
             .render(area, buf);

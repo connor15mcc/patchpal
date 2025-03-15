@@ -97,6 +97,7 @@ async fn main() -> anyhow::Result<()> {
     // can maybe even just use oneshot channel
     let (tx, mut rx) = channel::<Patch>(10);
 
+    // TODO: should signal handle
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.spawn(run_patch_server(tx));
 

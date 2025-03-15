@@ -13,6 +13,8 @@
 use std::env;
 
 use futures_util::{future, pin_mut, StreamExt};
+use indoc::indoc;
+use patchpal::models::patchpal::Patch;
 use prost::Message as _;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
@@ -55,9 +57,23 @@ async fn read_stdin(tx: futures_channel::mpsc::UnboundedSender<Message>) {
         };
         buf.truncate(n);
 
-        let mut patch = patchpal::models::patchpal::Patch::default();
-        patch.metadata = String::from_utf8(buf.clone()).expect("should all be utf8");
-
+        let patch = Patch {
+            patch: indoc! {"
+                diff --git a/hello-world.txt b/hello-world.txt
+                new file mode 100644
+                index 0000000..9721e49
+                --- /dev/null
+                +++ b/hello-world.txt
+                @@ -0,0 +1,4 @@
+                +Hello to all!
+                +
+                +And to all a goodnight
+                +
+                ",
+            }
+            .to_string(),
+            metadata: String::from_utf8(buf.clone()).expect("should all be utf8"),
+        };
         buf.clear();
         buf.reserve(patch.encoded_len());
         patch.encode(&mut buf).unwrap();
