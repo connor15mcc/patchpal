@@ -13,10 +13,9 @@
 use std::env;
 
 use futures_util::{future, pin_mut, StreamExt};
+use prost::Message as _;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
-
-use prost::Message as _;
 
 #[tokio::main]
 async fn main() {

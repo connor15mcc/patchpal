@@ -8,7 +8,8 @@ use ratatui::{
     symbols::border,
     text::{Line, Text},
     widgets::{Block, Paragraph, Widget},
-    DefaultTerminal, Frame,
+    DefaultTerminal,
+    Frame,
 };
 use tokio::sync::mpsc::Receiver;
 

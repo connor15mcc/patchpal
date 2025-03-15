@@ -17,20 +17,18 @@
 //! connected clients they'll all join the same room and see everyone else's
 //! messages.
 
-use patchpal::{models::patchpal::Patch, tui};
 use std::{env, io::Error as IoError, net::SocketAddr};
 
 use futures_channel::mpsc::unbounded;
 use futures_util::{future, pin_mut, stream::TryStreamExt, StreamExt};
-
 use log::info;
+use patchpal::{models::patchpal::Patch, tui};
+use prost::Message as _;
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::mpsc::{channel, Sender},
 };
 use tokio_tungstenite::tungstenite::protocol::Message;
-
-use prost::Message as _;
 
 async fn handle_connection(raw_stream: TcpStream, addr: SocketAddr, tx: Sender<Patch>) {
     info!("Incoming TCP connection from: {}", addr);
