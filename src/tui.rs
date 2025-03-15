@@ -1,6 +1,6 @@
-use std::io;
-
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
+use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind};
+use futures_util::StreamExt;
+use log::info;
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -11,7 +11,7 @@ use ratatui::{
     DefaultTerminal,
     Frame,
 };
-use tokio::sync::mpsc::Receiver;
+use tokio::{select, sync::mpsc::Receiver};
 
 use crate::models::patchpal::Patch;
 
@@ -23,14 +23,14 @@ pub struct App {
 
 impl App {
     /// runs the application's main loop until the user quits
-    pub fn run(
+    pub async fn run(
         &mut self,
         terminal: &mut DefaultTerminal,
         rx: &mut Receiver<Patch>,
-    ) -> io::Result<()> {
+    ) -> anyhow::Result<()> {
         while !self.exit {
             terminal.draw(|frame| self.draw(frame))?;
-            self.handle_events(rx)?;
+            self.handle_events(rx).await?;
         }
         Ok(())
     }
@@ -40,16 +40,29 @@ impl App {
     }
 
     /// updates the application's state based on user input
-    fn handle_events(&mut self, rx: &mut Receiver<Patch>) -> io::Result<()> {
+    async fn handle_events(&mut self, rx: &mut Receiver<Patch>) -> anyhow::Result<()> {
+        let mut reader = EventStream::new();
+
         // TODO: switch on event::read + rx
-        match event::read()? {
-            // it's important to check that the event is a key press event as
-            // crossterm also emits key release and repeat events on Windows.
-            Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
-                self.handle_key_event(key_event)
-            }
-            _ => {}
-        };
+        select! {
+            event = reader.next() => {
+                if let Some(event) = event {
+                    match event? {
+                        // it's important to check that the event is a key press event as
+                        // crossterm also emits key release and repeat events on Windows.
+                        Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
+                            self.handle_key_event(key_event)
+                        }
+                        _ => {}
+                    }
+                }
+            },
+            patch = rx.recv() => {
+                if let Some(patch) = patch {
+                    info!("Recvd patch w/ body: {}", patch.metadata)
+                }
+            },
+        }
         Ok(())
     }
 

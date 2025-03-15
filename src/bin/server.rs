@@ -88,7 +88,8 @@ async fn run_patch_server(tx: Sender<Patch>) -> Result<(), IoError> {
     Ok(())
 }
 
-fn main() -> anyhow::Result<()> {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     cli_log::init_cli_log!();
 
     let mut terminal = ratatui::init();
@@ -99,13 +100,9 @@ fn main() -> anyhow::Result<()> {
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.spawn(run_patch_server(tx));
 
-    let app_result = tui::App::default().run(&mut terminal, &mut rx);
+    let mut app = tui::App::default();
+    let app_result = app.run(&mut terminal, &mut rx).await;
     ratatui::restore();
     app_result?;
     Ok(())
-    //run_tui().await;
-    //cli_log::init_cli_log!();
-    //
-    //let (_patch_srv, _tui) =
-    //    tokio::join!(tokio::spawn(run_patch_server()), tokio::spawn(run_tui()));
 }
