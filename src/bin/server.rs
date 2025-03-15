@@ -25,7 +25,6 @@ use patchpal::{models::patchpal::Patch, tui};
 use prost::Message as _;
 use tokio::{
     net::{TcpListener, TcpStream},
-    signal,
     sync::mpsc::{channel, Receiver, Sender},
 };
 use tokio_tungstenite::tungstenite::protocol::Message;
@@ -66,7 +65,6 @@ async fn handle_connection(
             }
             _ = token.cancelled() => {
                 info!("Closing stream");
-                // TODO: should actually write the cxn closed response back..
                 return
             }
         }
@@ -97,11 +95,6 @@ async fn run_patch_server(token: CancellationToken, tx: Sender<Patch>) -> Result
             }
         }
     }
-
-    //while let Ok((stream, addr)) = listener.accept().await {
-    //    info!("Accepted listener as {}", addr);
-    //    tokio::spawn(handle_connection(stream, addr, tx.clone()));
-    //}
 }
 
 async fn run_tui(token: CancellationToken, mut rx: Receiver<Patch>) -> anyhow::Result<()> {
@@ -121,23 +114,15 @@ async fn main() -> anyhow::Result<()> {
     // can maybe even just use oneshot channel
     let (tx, rx) = channel::<Patch>(10);
 
-    // TODO: should signal handle
     let tui = tokio::spawn(run_tui(token.clone(), rx));
     let patch = tokio::spawn(run_patch_server(token.clone(), tx));
-
-    info!("About to select wait");
     tokio::select! {
-        _ = signal::ctrl_c() => {
-            info!("<C>-c signal, cancelling token");
-            token.cancel();
-        },
+        // ctrl_c is handled in TUI event loop bc of raw mode
         _ = token.cancelled() => {
             info!("Token cancelled");
         },
         _ = tui => {},
         _ = patch => {},
     }
-    info!("Done with select wait");
-    //app_result?;
     Ok(())
 }
