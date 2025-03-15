@@ -19,7 +19,7 @@
 
 use std::{env, io::Error as IoError, net::SocketAddr};
 
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use log::{info, warn};
 use patchpal::{models::patchpal::Patch, tui};
 use prost::Message as _;
@@ -43,7 +43,7 @@ async fn handle_connection(
         .expect("Error during the websocket handshake occurred");
     info!("WebSocket connection established: {}", addr);
 
-    let (_, mut incoming) = ws_stream.split();
+    let (mut outgoing, mut incoming) = ws_stream.split();
 
     loop {
         tokio::select! {
@@ -65,6 +65,7 @@ async fn handle_connection(
             }
             _ = token.cancelled() => {
                 info!("Closing stream");
+                let _ = outgoing.close();
                 return
             }
         }

@@ -16,7 +16,7 @@ use futures_util::{future, pin_mut, StreamExt};
 use indoc::indoc;
 use patchpal::models::patchpal::Patch;
 use prost::Message as _;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncReadExt;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
 #[tokio::main]
@@ -34,12 +34,7 @@ async fn main() {
     let (write, read) = ws_stream.split();
 
     let stdin_to_ws = stdin_rx.map(Ok).forward(write);
-    let ws_to_stdout = {
-        read.for_each(|message| async {
-            let data = message.unwrap().into_data();
-            tokio::io::stdout().write_all(&data).await.unwrap();
-        })
-    };
+    let ws_to_stdout = { read.for_each(|_| async {}) };
 
     pin_mut!(stdin_to_ws, ws_to_stdout);
     future::select(stdin_to_ws, ws_to_stdout).await;
