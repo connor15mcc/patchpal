@@ -19,18 +19,24 @@
 
 use std::{env, io::Error as IoError, net::SocketAddr};
 
-use futures_channel::mpsc::unbounded;
-use futures_util::{future, pin_mut, stream::TryStreamExt, StreamExt};
-use log::info;
+use futures_util::StreamExt;
+use log::{info, warn};
 use patchpal::{models::patchpal::Patch, tui};
 use prost::Message as _;
 use tokio::{
     net::{TcpListener, TcpStream},
+    signal,
     sync::mpsc::{channel, Receiver, Sender},
 };
 use tokio_tungstenite::tungstenite::protocol::Message;
+use tokio_util::sync::CancellationToken;
 
-async fn handle_connection(raw_stream: TcpStream, addr: SocketAddr, tx: Sender<Patch>) {
+async fn handle_connection(
+    token: CancellationToken,
+    raw_stream: TcpStream,
+    addr: SocketAddr,
+    tx: Sender<Patch>,
+) {
     info!("Incoming TCP connection from: {}", addr);
 
     let ws_stream = tokio_tungstenite::accept_async(raw_stream)
@@ -38,38 +44,36 @@ async fn handle_connection(raw_stream: TcpStream, addr: SocketAddr, tx: Sender<P
         .expect("Error during the websocket handshake occurred");
     info!("WebSocket connection established: {}", addr);
 
-    // Insert the write part of this peer to the peer map.
-    let (_tx, rx) = unbounded();
+    let (_, mut incoming) = ws_stream.split();
 
-    let (outgoing, incoming) = ws_stream.split();
-
-    let broadcast_incoming = incoming.try_for_each(async |msg| {
-        match msg {
-            Message::Binary(b) => {
-                let patch = Patch::decode(b).unwrap();
-                info!("Received a message from {}: {}", addr, patch.metadata);
-                tx.send(patch).await.unwrap();
-                info!("Sent state update from addr {}", addr);
-
-                future::ok(())
+    loop {
+        tokio::select! {
+            msg = incoming.next() => {
+                match msg {
+                    Some(Ok(Message::Binary(b))) => {
+                        let patch = Patch::decode(b).unwrap();
+                        info!("Received a message from {}: {}", addr, patch.metadata);
+                        tx.send(patch).await.unwrap();
+                        info!("Sent state update from addr {}", addr);
+                    }
+                    None => {
+                        info!("{} disconnected", &addr);
+                    }
+                    _ => {
+                        warn!("Not sure how to handle... (got non-binary message)");
+                    }
+                }
             }
-            _ => {
-                eprintln!("Not sure how to handle... (got non-binary message)");
-                future::ok(())
+            _ = token.cancelled() => {
+                info!("Closing stream");
+                // TODO: should actually write the cxn closed response back..
+                return
             }
         }
-        .await
-    });
-
-    let receive_from_others = rx.map(Ok).forward(outgoing);
-
-    pin_mut!(broadcast_incoming, receive_from_others);
-    future::select(broadcast_incoming, receive_from_others).await;
-
-    info!("{} disconnected", &addr);
+    }
 }
 
-async fn run_patch_server(tx: Sender<Patch>) -> Result<(), IoError> {
+async fn run_patch_server(token: CancellationToken, tx: Sender<Patch>) -> Result<(), IoError> {
     let addr = env::args()
         .nth(1)
         .unwrap_or_else(|| "127.0.0.1:8080".to_string());
@@ -79,19 +83,32 @@ async fn run_patch_server(tx: Sender<Patch>) -> Result<(), IoError> {
     let listener = try_socket.expect("Failed to bind");
     info!("Listening on: {}", addr);
 
-    // Let's spawn the handling of each connection in a separate task.
-    while let Ok((stream, addr)) = listener.accept().await {
-        info!("Accepted listener as {}", addr);
-        tokio::spawn(handle_connection(stream, addr, tx.clone()));
+    loop {
+        tokio::select! {
+            cxn = listener.accept() => {
+                if let Ok((stream, addr)) = cxn {
+                    info!("Accepted listener as {}", addr);
+                    tokio::spawn(handle_connection(token.clone(), stream, addr, tx.clone()));
+                }
+            }
+            _ = token.cancelled() => {
+                info!("Shutting down from signal");
+                return Ok(())
+            }
+        }
     }
 
-    Ok(())
+    //while let Ok((stream, addr)) = listener.accept().await {
+    //    info!("Accepted listener as {}", addr);
+    //    tokio::spawn(handle_connection(stream, addr, tx.clone()));
+    //}
 }
 
-async fn run_tui(mut rx: Receiver<Patch>) -> anyhow::Result<()> {
+async fn run_tui(token: CancellationToken, mut rx: Receiver<Patch>) -> anyhow::Result<()> {
     let mut terminal = ratatui::init();
     let mut app = tui::App::default();
-    app.run(&mut terminal, &mut rx).await?;
+    app.run(&token, &mut terminal, &mut rx).await?;
+    token.cancel();
     Ok(())
 }
 
@@ -99,16 +116,28 @@ async fn run_tui(mut rx: Receiver<Patch>) -> anyhow::Result<()> {
 async fn main() -> anyhow::Result<()> {
     cli_log::init_cli_log!();
 
+    let token = CancellationToken::new();
     // arbitrarily decided: should think about this more
     // can maybe even just use oneshot channel
     let (tx, rx) = channel::<Patch>(10);
 
     // TODO: should signal handle
-    let patch = tokio::spawn(run_patch_server(tx));
-    let tui = tokio::spawn(run_tui(rx));
+    let tui = tokio::spawn(run_tui(token.clone(), rx));
+    let patch = tokio::spawn(run_patch_server(token.clone(), tx));
 
-    let _ = tui.await;
-    let _ = patch.await;
+    info!("About to select wait");
+    tokio::select! {
+        _ = signal::ctrl_c() => {
+            info!("<C>-c signal, cancelling token");
+            token.cancel();
+        },
+        _ = token.cancelled() => {
+            info!("Token cancelled");
+        },
+        _ = tui => {},
+        _ = patch => {},
+    }
+    info!("Done with select wait");
     //app_result?;
     Ok(())
 }

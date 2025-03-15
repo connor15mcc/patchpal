@@ -1,4 +1,4 @@
-use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind};
+use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use futures_util::StreamExt;
 use log::info;
 use ratatui::{
@@ -12,12 +12,12 @@ use ratatui::{
     Frame,
 };
 use tokio::{select, sync::mpsc::Receiver};
+use tokio_util::sync::CancellationToken;
 
 use crate::models::patchpal::Patch;
 
 #[derive(Debug, Default)]
 pub struct App {
-    counter: u8,
     active_patch: Option<Patch>,
     exit: bool,
 }
@@ -26,12 +26,13 @@ impl App {
     /// runs the application's main loop until the user quits
     pub async fn run(
         &mut self,
+        token: &CancellationToken,
         terminal: &mut DefaultTerminal,
         rx: &mut Receiver<Patch>,
     ) -> anyhow::Result<()> {
         while !self.exit {
             terminal.draw(|frame| self.draw(frame))?;
-            self.handle_events(rx).await?;
+            self.handle_events(&token, rx).await?;
         }
         ratatui::restore();
         Ok(())
@@ -42,7 +43,11 @@ impl App {
     }
 
     /// updates the application's state based on user input
-    async fn handle_events(&mut self, rx: &mut Receiver<Patch>) -> anyhow::Result<()> {
+    async fn handle_events(
+        &mut self,
+        token: &CancellationToken,
+        rx: &mut Receiver<Patch>,
+    ) -> anyhow::Result<()> {
         let mut reader = EventStream::new();
 
         // TODO: switch on event::read + rx
@@ -65,15 +70,26 @@ impl App {
                     self.handle_patch_event(patch);
                 }
             },
+            _ = token.cancelled() => {
+                info!("Shutting down from signal");
+                self.exit = true;
+            }
         }
         Ok(())
     }
 
     fn handle_key_event(&mut self, key_event: KeyEvent) {
-        match key_event.code {
-            KeyCode::Char('q') => self.exit(),
-            KeyCode::Left => self.decrement_counter(),
-            KeyCode::Right => self.increment_counter(),
+        match key_event {
+            // must support <C-q> as well, since we run in raw mode
+            KeyEvent {
+                code: KeyCode::Char('q'),
+                ..
+            }
+            | KeyEvent {
+                code: KeyCode::Char('c'),
+                modifiers: KeyModifiers::CONTROL,
+                ..
+            } => self.exit(),
             _ => {}
         }
     }
@@ -84,14 +100,6 @@ impl App {
 
     fn exit(&mut self) {
         self.exit = true;
-    }
-
-    fn increment_counter(&mut self) {
-        self.counter += 1;
-    }
-
-    fn decrement_counter(&mut self) {
-        self.counter -= 1;
     }
 }
 
