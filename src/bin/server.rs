@@ -1,30 +1,15 @@
-//! A chat server that broadcasts a message to all connections.
-//!
-//! This is a simple line-based server which accepts WebSocket connections,
-//! reads lines from those connections, and broadcasts the lines to all other
-//! connected clients.
-//!
-//! You can test this out by running:
-//!
-//!     cargo run --example server 127.0.0.1:12345
-//!
-//! And then in another window run:
-//!
-//!     cargo run --example client ws://127.0.0.1:12345/
-//!
-//! You can run the second command in multiple windows and then chat between the
-//! two, seeing the messages from the other client as they're received. For all
-//! connected clients they'll all join the same room and see everyone else's
-//! messages.
-
 use std::{env, io::Error as IoError, net::SocketAddr};
 
 use futures_util::{SinkExt, StreamExt};
 use log::{info, warn};
-use patchpal::{models::patchpal::Patch, tui};
+use patchpal::{
+    models::patchpal::Patch,
+    tui::{self, PatchRequest},
+};
 use prost::Message as _;
 use tokio::{
     net::{TcpListener, TcpStream},
+    select,
     sync::mpsc::{channel, Receiver, Sender},
 };
 use tokio_tungstenite::tungstenite::protocol::Message;
@@ -34,7 +19,7 @@ async fn handle_connection(
     token: CancellationToken,
     raw_stream: TcpStream,
     addr: SocketAddr,
-    tx: Sender<Patch>,
+    tx: Sender<PatchRequest>,
 ) {
     info!("Incoming TCP connection from: {}", addr);
 
@@ -52,8 +37,25 @@ async fn handle_connection(
                     Some(Ok(Message::Binary(b))) => {
                         let patch = Patch::decode(b).unwrap();
                         info!("Received a message from {}: {}", addr, patch.metadata);
-                        tx.send(patch).await.unwrap();
+                        let (response_tx, mut response_rx) = channel(1);
+                        let request = PatchRequest {
+                            patch,
+                            response_chan: response_tx
+                        };
+                        tx.send(request).await.unwrap();
                         info!("Sent state update from addr {}", addr);
+
+                        select! {
+                            response = response_rx.recv() => {
+                                info!("Received state update");
+                                match response {
+                                    None => info!("Empty update, channel closed"),
+                                    Some(response) => {
+                                        outgoing.send(response.encode_to_vec().into()).await.expect("failed to send");
+                                    }
+                                }
+                            }
+                        }
                     }
                     None => {
                         info!("{} disconnected", &addr);
@@ -65,14 +67,17 @@ async fn handle_connection(
             }
             _ = token.cancelled() => {
                 info!("Closing stream");
-                let _ = outgoing.close();
+                let _ = outgoing.close().await;
                 return
             }
         }
     }
 }
 
-async fn run_patch_server(token: CancellationToken, tx: Sender<Patch>) -> Result<(), IoError> {
+async fn run_patch_server(
+    token: CancellationToken,
+    tx: Sender<PatchRequest>,
+) -> Result<(), IoError> {
     let addr = env::args()
         .nth(1)
         .unwrap_or_else(|| "127.0.0.1:8080".to_string());
@@ -98,10 +103,10 @@ async fn run_patch_server(token: CancellationToken, tx: Sender<Patch>) -> Result
     }
 }
 
-async fn run_tui(token: CancellationToken, mut rx: Receiver<Patch>) -> anyhow::Result<()> {
+async fn run_tui(token: CancellationToken, rx: Receiver<PatchRequest>) -> anyhow::Result<()> {
     let mut terminal = ratatui::init();
-    let mut app = tui::App::default();
-    app.run(&token, &mut terminal, &mut rx).await?;
+    let mut app = tui::App::new(rx);
+    app.run(&token, &mut terminal).await?;
     token.cancel();
     Ok(())
 }
@@ -113,7 +118,7 @@ async fn main() -> anyhow::Result<()> {
     let token = CancellationToken::new();
     // arbitrarily decided: should think about this more
     // can maybe even just use oneshot channel
-    let (tx, rx) = channel::<Patch>(10);
+    let (tx, rx) = channel::<PatchRequest>(10);
 
     let tui = tokio::spawn(run_tui(token.clone(), rx));
     let patch = tokio::spawn(run_patch_server(token.clone(), tx));

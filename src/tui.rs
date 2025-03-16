@@ -11,28 +11,45 @@ use ratatui::{
     DefaultTerminal,
     Frame,
 };
-use tokio::{select, sync::mpsc::Receiver};
+use tokio::{
+    select,
+    sync::mpsc::{Receiver, Sender},
+};
 use tokio_util::sync::CancellationToken;
 
-use crate::models::patchpal::Patch;
+use crate::models::patchpal::{patch_response::Status, Patch, PatchResponse};
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone)]
+pub struct PatchRequest {
+    pub patch: Patch,
+    pub response_chan: Sender<PatchResponse>,
+}
+
+#[derive(Debug)]
 pub struct App {
-    active_patch: Option<Patch>,
+    submit_rx: Receiver<PatchRequest>,
+    active_patch: Option<PatchRequest>,
     exit: bool,
 }
 
 impl App {
+    pub fn new(submit_rx: Receiver<PatchRequest>) -> Self {
+        App {
+            submit_rx,
+            active_patch: None,
+            exit: false,
+        }
+    }
+
     /// runs the application's main loop until the user quits
     pub async fn run(
         &mut self,
         token: &CancellationToken,
         terminal: &mut DefaultTerminal,
-        rx: &mut Receiver<Patch>,
     ) -> anyhow::Result<()> {
         while !self.exit {
             terminal.draw(|frame| self.draw(frame))?;
-            self.handle_events(&token, rx).await?;
+            self.handle_events(token).await?;
         }
         ratatui::restore();
         Ok(())
@@ -43,11 +60,7 @@ impl App {
     }
 
     /// updates the application's state based on user input
-    async fn handle_events(
-        &mut self,
-        token: &CancellationToken,
-        rx: &mut Receiver<Patch>,
-    ) -> anyhow::Result<()> {
+    async fn handle_events(&mut self, token: &CancellationToken) -> anyhow::Result<()> {
         let mut reader = EventStream::new();
 
         // TODO: switch on event::read + rx
@@ -58,16 +71,16 @@ impl App {
                         // it's important to check that the event is a key press event as
                         // crossterm also emits key release and repeat events on Windows.
                         Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
-                            self.handle_key_event(key_event)
+                            self.handle_key_event(key_event).await;
                         }
                         _ => {}
                     }
                 }
             },
-            patch = rx.recv() => {
+            patch = self.submit_rx.recv() => {
                 if let Some(patch) = patch {
-                    info!("Recvd patch w/ metadata: {}", patch.metadata);
-                    self.handle_patch_event(patch);
+                    info!("Recvd patch w/ metadata: {}", patch.patch.metadata);
+                    self.handle_new_patch(patch);
                 }
             },
             _ = token.cancelled() => {
@@ -78,7 +91,7 @@ impl App {
         Ok(())
     }
 
-    fn handle_key_event(&mut self, key_event: KeyEvent) {
+    async fn handle_key_event(&mut self, key_event: KeyEvent) {
         match key_event {
             // must support <C-q> as well, since we run in raw mode
             KeyEvent {
@@ -90,12 +103,33 @@ impl App {
                 modifiers: KeyModifiers::CONTROL,
                 ..
             } => self.exit(),
+            KeyEvent {
+                code: KeyCode::Char('a'),
+                ..
+            } => {
+                self.handle_patch_response(PatchResponse {
+                    status: Status::Accepted.into(),
+                })
+                .await;
+            }
             _ => {}
         }
     }
 
-    fn handle_patch_event(&mut self, patch: Patch) {
+    fn handle_new_patch(&mut self, patch: PatchRequest) {
         self.active_patch = Some(patch);
+    }
+
+    async fn handle_patch_response(&mut self, response: PatchResponse) {
+        // TODO: should we check the queue first?
+        let _ = self
+            .active_patch
+            .clone()
+            .expect("can't handle response w/o patch")
+            .response_chan
+            .send(response)
+            .await;
+        self.active_patch = None;
     }
 
     fn exit(&mut self) {
@@ -109,7 +143,7 @@ impl Widget for &App {
         let patch = self
             .active_patch
             .as_ref()
-            .map(|p| patch::Patch::from_single(&p.patch).unwrap());
+            .map(|p| patch::Patch::from_single(&p.patch.patch).unwrap());
 
         let title = match &patch {
             None => Line::from(" Patchpal (waiting..) ".bold()),
@@ -150,6 +184,18 @@ impl Widget for &App {
 
         let mut text = Text::from(vec![]);
         if let Some(patch) = patch {
+            let metadata = Line::from(vec![
+                "Metadata: ".into(),
+                self.active_patch
+                    .as_ref()
+                    .expect("already been parsed, TODO cleanup")
+                    .patch
+                    .metadata
+                    .clone()
+                    .blue(),
+            ]);
+            text.lines.push(metadata);
+
             let (old_path, new_path) = (patch.old.path.into_owned(), patch.new.path.into_owned());
             let (mut old_content, mut new_content) = (
                 vec![Line::from(vec!["Old: ".into(), old_path.red()])],
@@ -164,7 +210,6 @@ impl Widget for &App {
                     }
                 }
             }
-
             text.lines.append(&mut old_content);
             text.lines.append(&mut new_content);
         }

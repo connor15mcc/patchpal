@@ -6,3 +6,13 @@ message Patch {
 	string patch = 1;
 	string metadata = 2;
 }
+
+message PatchResponse {
+	enum Status {
+		UNKNOWN = 0;
+		ACCEPTED = 1;
+		REJECTED = 2;
+	}
+
+	Status status = 1;
+}
