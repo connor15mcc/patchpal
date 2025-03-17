@@ -1,13 +1,13 @@
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use futures_util::StreamExt;
-use log::info;
+use log::{info, warn};
 use ratatui::{
     buffer::Buffer,
-    layout::Rect,
+    layout::{Constraint, Direction, Layout, Rect},
     style::Stylize,
     symbols::border,
     text::{Line, Text},
-    widgets::{Block, Paragraph, Widget},
+    widgets::{Block, Borders, Paragraph, Widget, Wrap},
     DefaultTerminal,
     Frame,
 };
@@ -92,6 +92,7 @@ impl App {
     }
 
     async fn handle_key_event(&mut self, key_event: KeyEvent) {
+        info!("handling keys for {:?}", key_event);
         match key_event {
             // must support <C-q> as well, since we run in raw mode
             KeyEvent {
@@ -104,11 +105,22 @@ impl App {
                 ..
             } => self.exit(),
             KeyEvent {
-                code: KeyCode::Char('a'),
+                code: KeyCode::Char('y'),
                 ..
             } => {
+                info!("got `yes` reponse");
                 self.handle_patch_response(PatchResponse {
                     status: Status::Accepted.into(),
+                })
+                .await;
+            }
+            KeyEvent {
+                code: KeyCode::Char('n'),
+                ..
+            } => {
+                info!("got `no` reponse");
+                self.handle_patch_response(PatchResponse {
+                    status: Status::Rejected.into(),
                 })
                 .await;
             }
@@ -122,6 +134,7 @@ impl App {
 
     async fn handle_patch_response(&mut self, response: PatchResponse) {
         // TODO: should we check the queue first?
+        info!("handling patch reponse: {:?}", response);
         let _ = self
             .active_patch
             .clone()
@@ -130,6 +143,7 @@ impl App {
             .send(response)
             .await;
         self.active_patch = None;
+        info!("active_patch is now None")
     }
 
     fn exit(&mut self) {
@@ -140,19 +154,27 @@ impl App {
 impl Widget for &App {
     fn render(self, area: Rect, buf: &mut Buffer) {
         // PERF: would prefer not to recreate this each render
-        let patch = self
+        let patches = self
             .active_patch
             .as_ref()
-            .map(|p| patch::Patch::from_single(&p.patch.patch).unwrap());
+            .map(|p| patch::Patch::from_multiple(&p.patch.patch));
 
-        let title = match &patch {
+        // TODO: should handle them all
+        if let Some(Err(e)) = &patches {
+            warn!("Err: {:?}", e);
+        }
+
+        let title = match patches {
             None => Line::from(" Patchpal (waiting..) ".bold()),
-            Some(patch) => Line::from(vec![
-                " From:".into(),
-                format!(" {} ", patch.old.path.clone()).red().bold(),
-                "To:".into(),
-                format!(" {} ", patch.new.path.clone()).green().bold(),
-            ]),
+            Some(patch) => {
+                let patch = patch.unwrap()[0].clone();
+                Line::from(vec![
+                    " Src:".into(),
+                    format!(" {} ", patch.old.path.clone()).red().bold(),
+                    "Dst:".into(),
+                    format!(" {} ", patch.new.path.clone()).green().bold(),
+                ])
+            }
         };
 
         // (1/1) Stage this hunk [y,n,q,a,d,e,?]?
@@ -165,12 +187,13 @@ impl Widget for &App {
             // no
             "n".light_red().bold(),
             "o,".into(),
-            // all
-            "a".green().bold(),
-            "ll,".into(),
-            // done
-            "d".red().bold(),
-            "one,".into(),
+            // TODO: not implemented
+            //// all
+            //"a".green().bold(),
+            //"ll,".into(),
+            //// done
+            //"d".red().bold(),
+            //"one,".into(),
             // quit
             "q".blue().bold(),
             "uit".into(),
@@ -182,38 +205,56 @@ impl Widget for &App {
             .title_bottom(instructions.centered())
             .border_set(border::THICK);
 
-        let mut text = Text::from(vec![]);
-        if let Some(patch) = patch {
-            let metadata = Line::from(vec![
-                "Metadata: ".into(),
-                self.active_patch
-                    .as_ref()
-                    .expect("already been parsed, TODO cleanup")
-                    .patch
-                    .metadata
-                    .clone()
-                    .blue(),
-            ]);
-            text.lines.push(metadata);
-
-            let (old_path, new_path) = (patch.old.path.into_owned(), patch.new.path.into_owned());
-            let (mut old_content, mut new_content) = (
-                vec![Line::from(vec!["Old: ".into(), old_path.red()])],
-                vec![Line::from(vec!["New: ".into(), new_path.green()])],
-            );
-            for hunk in patch.hunks {
-                for line in hunk.lines {
-                    match line {
-                        patch::Line::Add(l) => new_content.push(Line::from(l.green())),
-                        patch::Line::Remove(l) => old_content.push(Line::from(l.red())),
-                        patch::Line::Context(_) => {}
-                    }
-                }
-            }
-            text.lines.append(&mut old_content);
-            text.lines.append(&mut new_content);
+        if let Some(patch) = &self.active_patch {
+            DiffWidget::new(&patch).render(block.inner(area), buf);
         }
 
-        Paragraph::new(text).block(block).render(area, buf);
+        Paragraph::default().block(block).render(area, buf);
+    }
+}
+
+struct DiffWidget<'a> {
+    inner: patch::Patch<'a>,
+    metadata: &'a str,
+}
+
+impl<'a> DiffWidget<'a> {
+    fn new(req: &'a PatchRequest) -> DiffWidget<'a> {
+        let patches = patch::Patch::from_multiple(&req.patch.patch).unwrap();
+        DiffWidget {
+            inner: patches[0].clone(),
+            metadata: &req.patch.metadata,
+        }
+    }
+}
+
+impl Widget for DiffWidget<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer)
+    where
+        Self: Sized,
+    {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(2), Constraint::Fill(4)])
+            .split(area);
+
+        Paragraph::new(Line::from(vec!["Metadata: ".blue(), self.metadata.into()]))
+            .wrap(Wrap { trim: true })
+            .block(Block::new().borders(Borders::BOTTOM))
+            .render(chunks[0], buf);
+
+        let mut diff_text = Text::from(vec![]);
+        for hunk in self.inner.hunks {
+            for line in hunk.lines {
+                match line {
+                    patch::Line::Add(l) => diff_text.lines.push(Line::from(l.green())),
+                    patch::Line::Remove(l) => diff_text.lines.push(Line::from(l.red())),
+                    patch::Line::Context(_) => {}
+                }
+            }
+        }
+        Paragraph::new(diff_text)
+            .block(Block::new())
+            .render(chunks[1], buf);
     }
 }

@@ -1,78 +1,97 @@
-//! A simple example of hooking up stdin/stdout to a WebSocket stream.
-//!
-//! This example will connect to a server specified in the argument list and
-//! then forward all data read on stdin to the server, printing out all data
-//! received on stdout.
-//!
-//! Note that this is not currently optimized for performance, especially around
-//! buffer management. Rather it's intended to show an example of working with a
-//! client.
-//!
-//! You can use this example together with the `server` example.
+use std::{
+    env,
+    io::{self, Read},
+};
 
-use std::env;
-
-use futures_util::{future, pin_mut, StreamExt};
-use indoc::indoc;
-use patchpal::models::patchpal::Patch;
+use anyhow::bail;
+use futures_util::{SinkExt, StreamExt};
+use git2::Repository;
+use log::{debug, info, warn};
+use patchpal::models::patchpal::{patch_response::Status, Patch, PatchResponse};
 use prost::Message as _;
-use tokio::io::AsyncReadExt;
-use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 #[tokio::main]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
+    stderrlog::new()
+        .verbosity(3)
+        .module(module_path!())
+        .init()
+        .unwrap();
+
+    // Read metadata from STDIN
+    let mut metadata = String::new();
+    io::stdin().read_to_string(&mut metadata)?;
+    info!("Read metadata: {} bytes", metadata.len());
+
+    // Open the current directory as a git repository
+    let repo = Repository::open(".")?;
+    info!("Successfully opened git repository");
+
+    let index = repo.index()?;
+    let head = repo.head()?.peel_to_tree()?;
+    let diff = repo.diff_tree_to_index(Some(&head), Some(&index), None)?;
+
+    let mut diff_str = String::new();
+    diff.print(git2::DiffFormat::Patch, |_d, _h, l| {
+        match l.origin() {
+            '+' | '-' | ' ' => diff_str.push(l.origin()),
+            _ => {}
+        };
+        diff_str.push_str(std::str::from_utf8(l.content()).expect("all utf-8"));
+        true
+    })?;
+
+    debug!("\nDiff preview (first 10 lines):");
+    debug!(
+        "{}",
+        diff_str.lines().take(10).collect::<Vec<&str>>().join("\n")
+    );
+    if diff_str.lines().count() > 10 {
+        debug!("... ({} more lines)", diff_str.lines().count() - 10);
+    }
+
+    // Create websocket cxn
     let url = env::args()
         .nth(1)
-        .unwrap_or_else(|| panic!("this program requires at least one argument"));
-
-    let (stdin_tx, stdin_rx) = futures_channel::mpsc::unbounded();
-    tokio::spawn(read_stdin(stdin_tx));
+        .unwrap_or_else(|| "ws://127.0.0.1:8443".to_string());
 
     let (ws_stream, _) = connect_async(&url).await.expect("Failed to connect");
-    println!("WebSocket handshake has been successfully completed");
+    info!("WebSocket handshake has been successfully completed");
+    let (mut ws_tx, mut ws_rx) = ws_stream.split();
+    let patch = Patch {
+        metadata,
+        patch: diff_str,
+    };
+    ws_tx
+        .send(patch.encode_to_vec().into())
+        .await
+        .expect("failed to send");
+    info!("Sent patch to server");
 
-    let (write, read) = ws_stream.split();
-
-    let stdin_to_ws = stdin_rx.map(Ok).forward(write);
-    let ws_to_stdout = { read.for_each(|_| async {}) };
-
-    pin_mut!(stdin_to_ws, ws_to_stdout);
-    future::select(stdin_to_ws, ws_to_stdout).await;
-}
-
-// Our helper method which will read data from stdin and send it along the
-// sender provided.
-async fn read_stdin(tx: futures_channel::mpsc::UnboundedSender<Message>) {
-    let mut stdin = tokio::io::stdin();
-    loop {
-        let mut buf = vec![0; 1024];
-        let n = match stdin.read(&mut buf).await {
-            Err(_) | Ok(0) => break,
-            Ok(n) => n,
-        };
-        buf.truncate(n);
-
-        let patch = Patch {
-            patch: indoc! {"
-                diff --git a/hello-world.txt b/hello-world.txt
-                new file mode 100644
-                index 0000000..9721e49
-                --- /dev/null
-                +++ b/hello-world.txt
-                @@ -0,0 +1,4 @@
-                +Hello to all!
-                +
-                +And to all a goodnight
-                +
-                ",
+    match ws_rx.next().await {
+        Some(Ok(Message::Binary(b))) => {
+            info!("got response from server");
+            let response = PatchResponse::decode(b).unwrap();
+            match response.status.try_into()? {
+                Status::Accepted => return Ok(()),
+                Status::Rejected => {
+                    info!("patch was rejected!");
+                    std::process::exit(1)
+                }
+                Status::Unknown => bail!("who knows..."),
             }
-            .to_string(),
-            metadata: String::from_utf8(buf.clone()).expect("should all be utf8"),
-        };
-        buf.clear();
-        buf.reserve(patch.encoded_len());
-        patch.encode(&mut buf).unwrap();
+        }
+        Some(Ok(Message::Close(_))) => {
+            info!("Server disconnected.");
+        }
+        Some(Err(e)) => {
+            warn!("Err on socket: {}", e);
+        }
+        _ => {
+            warn!("Not sure how to handle... (got unexpected message)");
+        }
+    };
 
-        tx.unbounded_send(Message::binary(buf)).unwrap();
-    }
+    Ok(())
 }

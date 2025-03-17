@@ -52,6 +52,7 @@ async fn handle_connection(
                                     None => info!("Empty update, channel closed"),
                                     Some(response) => {
                                         outgoing.send(response.encode_to_vec().into()).await.expect("failed to send");
+                                        info!("Sent response: {:?}", response);
                                     }
                                 }
                             }
@@ -80,7 +81,7 @@ async fn run_patch_server(
 ) -> Result<(), IoError> {
     let addr = env::args()
         .nth(1)
-        .unwrap_or_else(|| "127.0.0.1:8080".to_string());
+        .unwrap_or_else(|| "127.0.0.1:8443".to_string());
 
     // Create the event loop and TCP listener we'll accept connections on.
     let try_socket = TcpListener::bind(&addr).await;
@@ -124,9 +125,9 @@ async fn main() -> anyhow::Result<()> {
     let patch = tokio::spawn(run_patch_server(token.clone(), tx));
     tokio::select! {
         // ctrl_c is handled in TUI event loop bc of raw mode
-        _ = token.cancelled() => {
-            info!("Token cancelled");
-        },
+        //_ = token.cancelled() => {
+        //    info!("Token cancelled");
+        //},
         _ = tui => {},
         _ = patch => {},
     }
