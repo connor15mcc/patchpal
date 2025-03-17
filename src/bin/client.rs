@@ -29,8 +29,14 @@ async fn main() -> anyhow::Result<()> {
     info!("Successfully opened git repository");
 
     let index = repo.index()?;
-    let head = repo.head()?.peel_to_tree()?;
-    let diff = repo.diff_tree_to_index(Some(&head), Some(&index), None)?;
+    let diff = repo.diff_index_to_workdir(Some(&index), None)?;
+
+    if diff.stats()?.files_changed() == 0 {
+        debug!("{}", diff.stats()?.insertions());
+        debug!("{}", diff.stats()?.deletions());
+        debug!("{}", diff.stats()?.files_changed());
+        bail!("no files changed..")
+    }
 
     let mut diff_str = String::new();
     diff.print(git2::DiffFormat::Patch, |_d, _h, l| {
