@@ -32,10 +32,10 @@ async fn main() -> anyhow::Result<()> {
     let diff = repo.diff_index_to_workdir(Some(&index), None)?;
 
     if diff.stats()?.files_changed() == 0 {
-        debug!("{}", diff.stats()?.insertions());
-        debug!("{}", diff.stats()?.deletions());
-        debug!("{}", diff.stats()?.files_changed());
-        bail!("no files changed..")
+        debug!("Added:   {}", diff.stats()?.insertions());
+        debug!("Deleted: {}", diff.stats()?.deletions());
+        debug!("Changed: {}", diff.stats()?.files_changed());
+        bail!("no files changed...")
     }
 
     let mut diff_str = String::new();
