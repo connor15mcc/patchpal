@@ -7,7 +7,8 @@ use ratatui::{
     style::Stylize,
     text::{Line, Text},
     widgets::{Block, Padding, Paragraph, StatefulWidget, Widget, Wrap},
-    DefaultTerminal, Frame,
+    DefaultTerminal,
+    Frame,
 };
 use tokio::{
     select,
@@ -41,21 +42,30 @@ impl TryFrom<(Patch, Sender<PatchResponse>)> for PatchRequest {
     }
 }
 
+#[derive(Debug, Clone)]
+enum InputState {
+    Interactive,
+    AcceptAll,
+    RejectAll,
+}
+
 #[derive(Debug)]
 pub struct App {
     submit_rx: Receiver<PatchRequest>,
-    active_patch: Option<PatchRequest>,
-    exit: bool,
+    active_patches: Option<PatchRequest>,
+    input_state: InputState,
     scroll_state: ScrollViewState,
+    exit: bool,
 }
 
 impl App {
     pub fn new(submit_rx: Receiver<PatchRequest>) -> Self {
         App {
             submit_rx,
-            active_patch: None,
-            exit: false,
+            active_patches: None,
+            input_state: InputState::Interactive,
             scroll_state: ScrollViewState::new(),
+            exit: false,
         }
     }
 
@@ -98,7 +108,7 @@ impl App {
             patch = self.submit_rx.recv() => {
                 if let Some(patch) = patch {
                     info!("Recvd patch w/ metadata: {}", patch.metadata);
-                    self.handle_new_patch(patch);
+                    self.handle_new_patch(patch).await;
                 }
             },
             _ = token.cancelled() => {
@@ -110,11 +120,11 @@ impl App {
     }
 
     async fn handle_key_event(&mut self, key_event: KeyEvent) {
-        info!("handling keys for {:?}", key_event);
         match key_event {
             // must support <C-q> as well, since we run in raw mode
             KeyEvent {
                 code: KeyCode::Char('q'),
+                modifiers: KeyModifiers::NONE,
                 ..
             }
             | KeyEvent {
@@ -124,6 +134,7 @@ impl App {
             } => self.exit(),
             KeyEvent {
                 code: KeyCode::Char('y'),
+                modifiers: KeyModifiers::NONE,
                 ..
             } => {
                 info!("got `yes` reponse");
@@ -134,6 +145,7 @@ impl App {
             }
             KeyEvent {
                 code: KeyCode::Char('n'),
+                modifiers: KeyModifiers::NONE,
                 ..
             } => {
                 info!("got `no` reponse");
@@ -143,25 +155,45 @@ impl App {
                 .await;
             }
             KeyEvent {
+                code: KeyCode::Char('a'),
+                modifiers: KeyModifiers::NONE,
+                ..
+            } => {
+                info!("accepting all remaining");
+                self.input_state = InputState::AcceptAll;
+            }
+            KeyEvent {
+                code: KeyCode::Char('d'),
+                modifiers: KeyModifiers::NONE,
+                ..
+            } => {
+                info!("rejecting all remaining");
+                self.input_state = InputState::RejectAll;
+            }
+            KeyEvent {
                 code: KeyCode::Char('k'),
+                modifiers: KeyModifiers::NONE,
                 ..
             } => {
                 self.scroll_state.scroll_up();
             }
             KeyEvent {
                 code: KeyCode::Char('j'),
+                modifiers: KeyModifiers::NONE,
                 ..
             } => {
                 self.scroll_state.scroll_down();
             }
             KeyEvent {
                 code: KeyCode::Char('g'),
+                modifiers: KeyModifiers::NONE,
                 ..
             } => {
                 self.scroll_state.scroll_to_top();
             }
             KeyEvent {
                 code: KeyCode::Char('G'),
+                modifiers: KeyModifiers::NONE,
                 ..
             } => {
                 self.scroll_state.scroll_to_bottom();
@@ -184,8 +216,33 @@ impl App {
         }
     }
 
-    fn handle_new_patch(&mut self, request: PatchRequest) {
-        self.active_patch = Some(request);
+    async fn handle_new_patch(&mut self, request: PatchRequest) {
+        match self.input_state {
+            InputState::Interactive => {
+                // WARN: this is insufficient for multiple clients. must support a peekable chan or
+                // something
+                self.active_patches = Some(request);
+                return;
+            }
+            // TODO: it's possible this doesn't need to be on the state and can just be a hotloop
+            // once this is set...
+            InputState::AcceptAll => {
+                let _ = request
+                    .response_chan
+                    .send(PatchResponse {
+                        status: Status::Accepted.into(),
+                    })
+                    .await;
+            }
+            InputState::RejectAll => {
+                let _ = request
+                    .response_chan
+                    .send(PatchResponse {
+                        status: Status::Rejected.into(),
+                    })
+                    .await;
+            }
+        }
     }
 
     async fn handle_patch_response(&mut self, response: PatchResponse) {
@@ -216,7 +273,7 @@ impl Widget for &mut App {
 
         // (1/1) Stage this hunk [y,n,q,a,d,e,?]?
         let instructions = Line::from(vec![
-            " Stage this patch ".into(),
+            " Accept this patch ".into(),
             "[".into(),
             // yes
             "y".light_green().bold(),
@@ -224,13 +281,12 @@ impl Widget for &mut App {
             // no
             "n".light_red().bold(),
             "o,".into(),
-            // TODO: not implemented
-            //// all
-            //"a".green().bold(),
-            //"ll,".into(),
-            //// done
-            //"d".red().bold(),
-            //"one,".into(),
+            // all
+            "a".green().bold(),
+            "ll,".into(),
+            // done
+            "d".red().bold(),
+            "one,".into(),
             // quit
             "q".blue().bold(),
             "uit".into(),
