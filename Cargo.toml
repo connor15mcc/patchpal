@@ -30,7 +30,7 @@ tokio-util = "0.7.14"
 git2 = "0.20.0"
 stderrlog = "0.6.0"
 tui-scrollview = "0.5.1"
-patchkit = "0.2.1"
+unidiff = "0.3.3"
 
 [build-dependencies]
 prost-build = "0.13.0"

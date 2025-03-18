@@ -1,7 +1,6 @@
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use futures_util::StreamExt;
 use log::info;
-use patchkit::unified::{self, HunkLine, PlainOrBinaryPatch, UnifiedPatch};
 use ratatui::{
     buffer::Buffer,
     layout::{Rect, Size},
@@ -16,12 +15,13 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 use tui_scrollview::{ScrollView, ScrollViewState, ScrollbarVisibility};
+use unidiff::PatchSet;
 
 use crate::models::patchpal::{patch_response::Status, Patch, PatchResponse};
 
 #[derive(Debug, Clone)]
 pub struct PatchRequest {
-    pub patches: Vec<UnifiedPatch>,
+    pub patch_set: PatchSet,
     pub metadata: String,
     pub response_chan: Sender<PatchResponse>,
 }
@@ -31,18 +31,10 @@ impl TryFrom<(Patch, Sender<PatchResponse>)> for PatchRequest {
 
     fn try_from((patch, response_chan): (Patch, Sender<PatchResponse>)) -> anyhow::Result<Self> {
         let metadata = patch.metadata;
-        let patch_lines = patch.patch.lines().map(|l| l.bytes().collect());
-        let patches = patchkit::unified::parse_patches(patch_lines)
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .filter_map(|p| match p {
-                PlainOrBinaryPatch::Plain(unified) => Some(unified),
-                PlainOrBinaryPatch::Binary(_) => None,
-            })
-            .collect();
+        let patch_set = patch.patch.parse::<PatchSet>()?;
 
         Ok(PatchRequest {
-            patches,
+            patch_set,
             metadata,
             response_chan,
         })
@@ -52,7 +44,7 @@ impl TryFrom<(Patch, Sender<PatchResponse>)> for PatchRequest {
 #[derive(Debug)]
 pub struct App {
     submit_rx: Receiver<PatchRequest>,
-    active_patches: Option<PatchRequest>,
+    active_patch: Option<PatchRequest>,
     exit: bool,
     scroll_state: ScrollViewState,
 }
@@ -61,7 +53,7 @@ impl App {
     pub fn new(submit_rx: Receiver<PatchRequest>) -> Self {
         App {
             submit_rx,
-            active_patches: None,
+            active_patch: None,
             exit: false,
             scroll_state: ScrollViewState::new(),
         }
@@ -193,20 +185,20 @@ impl App {
     }
 
     fn handle_new_patch(&mut self, request: PatchRequest) {
-        self.active_patches = Some(request);
+        self.active_patch = Some(request);
     }
 
     async fn handle_patch_response(&mut self, response: PatchResponse) {
         // TODO: should we check the queue first?
         info!("handling patch reponse: {:?}", response);
         let _ = self
-            .active_patches
+            .active_patch
             .clone()
             .expect("can't handle response w/o patch")
             .response_chan
             .send(response)
             .await;
-        self.active_patches = None;
+        self.active_patch = None;
         info!("active_patch is now None")
     }
 
@@ -217,7 +209,7 @@ impl App {
 
 impl Widget for &mut App {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let title = match self.active_patches {
+        let title = match self.active_patch {
             None => Line::from(" Patchpal (waiting..) ".bold()),
             Some(_) => Line::from(" Patchpal ".bold()),
         };
@@ -249,10 +241,10 @@ impl Widget for &mut App {
             .title(title.centered())
             .title_bottom(instructions.centered());
 
-        if let Some(patches) = &self.active_patches {
+        if let Some(patch) = &self.active_patch {
             DiffWidget {
-                inner: &patches.patches,
-                metadata: &patches.metadata,
+                inner: &patch.patch_set,
+                metadata: &patch.metadata,
             }
             .render(block.inner(area), buf, &mut self.scroll_state);
         }
@@ -262,7 +254,7 @@ impl Widget for &mut App {
 }
 
 struct DiffWidget<'a> {
-    inner: &'a [UnifiedPatch],
+    inner: &'a PatchSet,
     metadata: &'a str,
 }
 
@@ -275,21 +267,23 @@ impl StatefulWidget for DiffWidget<'_> {
         let mut patch_offset_y =
             area.top() + metadata.line_count(metadata.line_width() as u16) as u16;
         let mut hunks_render_info = vec![];
-        for patch in self.inner {
+        for patch in self.inner.files() {
+            // TODO: print the file name too
             let mut hunk_offset_y = 0u16;
-            for hunk in &patch.hunks {
+            for hunk in patch.hunks() {
                 let mut hunk_text = Text::from(vec![]);
-                for line in &hunk.lines {
+                for line in hunk.lines() {
                     match line {
-                        HunkLine::InsertLine(l) => hunk_text.lines.push(Line::from(
-                            std::str::from_utf8(l).expect("all lines are utf-8").green(),
-                        )),
-                        HunkLine::RemoveLine(l) => hunk_text.lines.push(Line::from(
-                            std::str::from_utf8(l).expect("all lines are utf-8").red(),
-                        )),
-                        HunkLine::ContextLine(l) => hunk_text.lines.push(Line::from(
-                            std::str::from_utf8(l).expect("all lines are utf-8").dim(),
-                        )),
+                        l if l.is_added() => {
+                            hunk_text.lines.push(Line::from(l.value.clone().green()))
+                        }
+                        l if l.is_removed() => {
+                            hunk_text.lines.push(Line::from(l.value.clone().red()))
+                        }
+                        l if l.is_context() => {
+                            hunk_text.lines.push(Line::from(l.value.clone().dim()))
+                        }
+                        _ => unreachable!(),
                     }
                 }
 
