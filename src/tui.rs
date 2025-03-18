@@ -249,13 +249,13 @@ impl App {
         // TODO: should we check the queue first?
         info!("handling patch reponse: {:?}", response);
         let _ = self
-            .active_patch
+            .active_patches
             .clone()
             .expect("can't handle response w/o patch")
             .response_chan
             .send(response)
             .await;
-        self.active_patch = None;
+        self.active_patches = None;
         info!("active_patch is now None")
     }
 
@@ -266,7 +266,7 @@ impl App {
 
 impl Widget for &mut App {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let title = match self.active_patch {
+        let title = match self.active_patches {
             None => Line::from(" Patchpal (waiting..) ".bold()),
             Some(_) => Line::from(" Patchpal ".bold()),
         };
@@ -297,7 +297,7 @@ impl Widget for &mut App {
             .title(title.centered())
             .title_bottom(instructions.centered());
 
-        if let Some(patch) = &self.active_patch {
+        if let Some(patch) = &self.active_patches {
             DiffWidget {
                 inner: &patch.patch_set,
                 metadata: &patch.metadata,
@@ -327,6 +327,12 @@ impl StatefulWidget for DiffWidget<'_> {
             // TODO: print the file name too
             let mut hunk_offset_y = 0u16;
             for hunk in patch.hunks() {
+                let hunk_title = Line::from(vec![
+                    " From:".into(),
+                    format!(" {} ", patch.source_file).red().bold(),
+                    "To:".into(),
+                    format!(" {} ", patch.target_file).green().bold(),
+                ]);
                 let mut hunk_text = Text::from(vec![]);
                 for line in hunk.lines() {
                     match line {
@@ -351,7 +357,8 @@ impl StatefulWidget for DiffWidget<'_> {
                 };
                 hunk_offset_y += hunk_text.height() as u16;
 
-                let hunk_paragraph = Paragraph::new(hunk_text).block(Block::bordered());
+                let hunk_paragraph =
+                    Paragraph::new(hunk_text).block(Block::bordered().title(hunk_title));
                 hunks_render_info.push((hunk_area, hunk_paragraph));
             }
             patch_offset_y += hunk_offset_y;
