@@ -1,43 +1,69 @@
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use futures_util::StreamExt;
-use log::{info, warn};
+use log::info;
+use patchkit::unified::{self, HunkLine, PlainOrBinaryPatch, UnifiedPatch};
 use ratatui::{
     buffer::Buffer,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Rect, Size},
     style::Stylize,
-    symbols::border,
     text::{Line, Text},
-    widgets::{Block, Borders, Paragraph, Widget, Wrap},
-    DefaultTerminal,
-    Frame,
+    widgets::{Block, Padding, Paragraph, StatefulWidget, Widget, Wrap},
+    DefaultTerminal, Frame,
 };
 use tokio::{
     select,
     sync::mpsc::{Receiver, Sender},
 };
 use tokio_util::sync::CancellationToken;
+use tui_scrollview::{ScrollView, ScrollViewState, ScrollbarVisibility};
 
 use crate::models::patchpal::{patch_response::Status, Patch, PatchResponse};
 
 #[derive(Debug, Clone)]
 pub struct PatchRequest {
-    pub patch: Patch,
+    pub patches: Vec<UnifiedPatch>,
+    pub metadata: String,
     pub response_chan: Sender<PatchResponse>,
+}
+
+impl TryFrom<(Patch, Sender<PatchResponse>)> for PatchRequest {
+    type Error = anyhow::Error;
+
+    fn try_from((patch, response_chan): (Patch, Sender<PatchResponse>)) -> anyhow::Result<Self> {
+        let metadata = patch.metadata;
+        let patch_lines = patch.patch.lines().map(|l| l.bytes().collect());
+        let patches = patchkit::unified::parse_patches(patch_lines)
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter_map(|p| match p {
+                PlainOrBinaryPatch::Plain(unified) => Some(unified),
+                PlainOrBinaryPatch::Binary(_) => None,
+            })
+            .collect();
+
+        Ok(PatchRequest {
+            patches,
+            metadata,
+            response_chan,
+        })
+    }
 }
 
 #[derive(Debug)]
 pub struct App {
     submit_rx: Receiver<PatchRequest>,
-    active_patch: Option<PatchRequest>,
+    active_patches: Option<PatchRequest>,
     exit: bool,
+    scroll_state: ScrollViewState,
 }
 
 impl App {
     pub fn new(submit_rx: Receiver<PatchRequest>) -> Self {
         App {
             submit_rx,
-            active_patch: None,
+            active_patches: None,
             exit: false,
+            scroll_state: ScrollViewState::new(),
         }
     }
 
@@ -55,7 +81,7 @@ impl App {
         Ok(())
     }
 
-    fn draw(&self, frame: &mut Frame) {
+    fn draw(&mut self, frame: &mut Frame) {
         frame.render_widget(self, frame.area());
     }
 
@@ -79,7 +105,7 @@ impl App {
             },
             patch = self.submit_rx.recv() => {
                 if let Some(patch) = patch {
-                    info!("Recvd patch w/ metadata: {}", patch.patch.metadata);
+                    info!("Recvd patch w/ metadata: {}", patch.metadata);
                     self.handle_new_patch(patch);
                 }
             },
@@ -124,25 +150,63 @@ impl App {
                 })
                 .await;
             }
+            KeyEvent {
+                code: KeyCode::Char('k'),
+                ..
+            } => {
+                self.scroll_state.scroll_up();
+            }
+            KeyEvent {
+                code: KeyCode::Char('j'),
+                ..
+            } => {
+                self.scroll_state.scroll_down();
+            }
+            KeyEvent {
+                code: KeyCode::Char('g'),
+                ..
+            } => {
+                self.scroll_state.scroll_to_top();
+            }
+            KeyEvent {
+                code: KeyCode::Char('G'),
+                ..
+            } => {
+                self.scroll_state.scroll_to_bottom();
+            }
+            KeyEvent {
+                code: KeyCode::Char('u'),
+                modifiers: KeyModifiers::CONTROL,
+                ..
+            } => {
+                self.scroll_state.scroll_page_up();
+            }
+            KeyEvent {
+                code: KeyCode::Char('d'),
+                modifiers: KeyModifiers::CONTROL,
+                ..
+            } => {
+                self.scroll_state.scroll_page_down();
+            }
             _ => {}
         }
     }
 
-    fn handle_new_patch(&mut self, patch: PatchRequest) {
-        self.active_patch = Some(patch);
+    fn handle_new_patch(&mut self, request: PatchRequest) {
+        self.active_patches = Some(request);
     }
 
     async fn handle_patch_response(&mut self, response: PatchResponse) {
         // TODO: should we check the queue first?
         info!("handling patch reponse: {:?}", response);
         let _ = self
-            .active_patch
+            .active_patches
             .clone()
             .expect("can't handle response w/o patch")
             .response_chan
             .send(response)
             .await;
-        self.active_patch = None;
+        self.active_patches = None;
         info!("active_patch is now None")
     }
 
@@ -151,30 +215,11 @@ impl App {
     }
 }
 
-impl Widget for &App {
+impl Widget for &mut App {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        // PERF: would prefer not to recreate this each render
-        let patches = self
-            .active_patch
-            .as_ref()
-            .map(|p| patch::Patch::from_multiple(&p.patch.patch));
-
-        // TODO: should handle them all
-        if let Some(Err(e)) = &patches {
-            warn!("Err: {:?}", e);
-        }
-
-        let title = match patches {
+        let title = match self.active_patches {
             None => Line::from(" Patchpal (waiting..) ".bold()),
-            Some(patch) => {
-                let patch = patch.unwrap()[0].clone();
-                Line::from(vec![
-                    " Src:".into(),
-                    format!(" {} ", patch.old.path.clone()).red().bold(),
-                    "Dst:".into(),
-                    format!(" {} ", patch.new.path.clone()).green().bold(),
-                ])
-            }
+            Some(_) => Line::from(" Patchpal ".bold()),
         };
 
         // (1/1) Stage this hunk [y,n,q,a,d,e,?]?
@@ -200,13 +245,16 @@ impl Widget for &App {
             "] ".into(),
         ]);
 
-        let block = Block::bordered()
+        let block = Block::new()
             .title(title.centered())
-            .title_bottom(instructions.centered())
-            .border_set(border::THICK);
+            .title_bottom(instructions.centered());
 
-        if let Some(patch) = &self.active_patch {
-            DiffWidget::new(&patch).render(block.inner(area), buf);
+        if let Some(patches) = &self.active_patches {
+            DiffWidget {
+                inner: &patches.patches,
+                metadata: &patches.metadata,
+            }
+            .render(block.inner(area), buf, &mut self.scroll_state);
         }
 
         Paragraph::default().block(block).render(area, buf);
@@ -214,47 +262,63 @@ impl Widget for &App {
 }
 
 struct DiffWidget<'a> {
-    inner: patch::Patch<'a>,
+    inner: &'a [UnifiedPatch],
     metadata: &'a str,
 }
 
-impl<'a> DiffWidget<'a> {
-    fn new(req: &'a PatchRequest) -> DiffWidget<'a> {
-        let patches = patch::Patch::from_multiple(&req.patch.patch).unwrap();
-        DiffWidget {
-            inner: patches[0].clone(),
-            metadata: &req.patch.metadata,
-        }
-    }
-}
+impl StatefulWidget for DiffWidget<'_> {
+    type State = ScrollViewState;
 
-impl Widget for DiffWidget<'_> {
-    fn render(self, area: Rect, buf: &mut Buffer)
-    where
-        Self: Sized,
-    {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(2), Constraint::Fill(4)])
-            .split(area);
+    fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
+        let metadata = Paragraph::new(Line::from(vec!["Metadata: ".blue(), self.metadata.into()]));
 
-        Paragraph::new(Line::from(vec!["Metadata: ".blue(), self.metadata.into()]))
-            .wrap(Wrap { trim: true })
-            .block(Block::new().borders(Borders::BOTTOM))
-            .render(chunks[0], buf);
-
-        let mut diff_text = Text::from(vec![]);
-        for hunk in self.inner.hunks {
-            for line in hunk.lines {
-                match line {
-                    patch::Line::Add(l) => diff_text.lines.push(Line::from(l.green())),
-                    patch::Line::Remove(l) => diff_text.lines.push(Line::from(l.red())),
-                    patch::Line::Context(_) => {}
+        let mut patch_offset_y =
+            area.top() + metadata.line_count(metadata.line_width() as u16) as u16;
+        let mut hunks_render_info = vec![];
+        for patch in self.inner {
+            let mut hunk_offset_y = 0u16;
+            for hunk in &patch.hunks {
+                let mut hunk_text = Text::from(vec![]);
+                for line in &hunk.lines {
+                    match line {
+                        HunkLine::InsertLine(l) => hunk_text.lines.push(Line::from(
+                            std::str::from_utf8(l).expect("all lines are utf-8").green(),
+                        )),
+                        HunkLine::RemoveLine(l) => hunk_text.lines.push(Line::from(
+                            std::str::from_utf8(l).expect("all lines are utf-8").red(),
+                        )),
+                        HunkLine::ContextLine(l) => hunk_text.lines.push(Line::from(
+                            std::str::from_utf8(l).expect("all lines are utf-8").dim(),
+                        )),
+                    }
                 }
+
+                let hunk_area = Rect {
+                    x: area.left(),
+                    y: patch_offset_y + hunk_offset_y,
+                    width: area.width - 1,
+                    height: hunk_text.height() as u16,
+                };
+                hunk_offset_y += hunk_text.height() as u16;
+
+                let hunk_paragraph = Paragraph::new(hunk_text).block(Block::bordered());
+                hunks_render_info.push((hunk_area, hunk_paragraph));
             }
+            patch_offset_y += hunk_offset_y;
         }
-        Paragraph::new(diff_text)
-            .block(Block::new())
-            .render(chunks[1], buf);
+        let mut scroll_view = ScrollView::new(Size::new(area.width, patch_offset_y))
+            .scrollbars_visibility(ScrollbarVisibility::Never);
+
+        scroll_view.render_widget(
+            metadata
+                .clone()
+                .wrap(Wrap { trim: true })
+                .block(Block::new().padding(Padding::horizontal(1))),
+            area,
+        );
+        for (hunk_area, hunk_paragraph) in hunks_render_info {
+            scroll_view.render_widget(hunk_paragraph, hunk_area);
+        }
+        scroll_view.render(area, buf, state);
     }
 }

@@ -38,10 +38,7 @@ async fn handle_connection(
                         let patch = Patch::decode(b).unwrap();
                         info!("Received a message from {}: {}", addr, patch.metadata);
                         let (response_tx, mut response_rx) = channel(1);
-                        let request = PatchRequest {
-                            patch,
-                            response_chan: response_tx
-                        };
+                        let request = PatchRequest::try_from((patch, response_tx)).expect("patches should all be valid");
                         tx.send(request).await.unwrap();
                         info!("Sent state update from addr {}", addr);
 
@@ -123,6 +120,7 @@ async fn main() -> anyhow::Result<()> {
 
     let tui = tokio::spawn(run_tui(token.clone(), rx));
     let patch = tokio::spawn(run_patch_server(token.clone(), tx));
+    // TODO: this should be a join since we want both to get a chance to shutdown gracefully
     tokio::select! {
         // ctrl_c is handled in TUI event loop bc of raw mode
         //_ = token.cancelled() => {
