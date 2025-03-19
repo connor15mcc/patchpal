@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use futures_util::StreamExt;
-use log::{debug, info};
+use log::info;
 use ratatui::{
     buffer::Buffer,
     layout::{Rect, Size},

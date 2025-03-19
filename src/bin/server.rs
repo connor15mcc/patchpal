@@ -57,6 +57,7 @@ async fn handle_connection(
                     }
                     None => {
                         info!("{} disconnected", &addr);
+                        return
                     }
                     _ => {
                         warn!("Not sure how to handle... (got non-binary message)");
