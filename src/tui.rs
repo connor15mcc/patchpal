@@ -1,6 +1,8 @@
+use std::time::Duration;
+
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use futures_util::StreamExt;
-use log::info;
+use log::{debug, info};
 use ratatui::{
     buffer::Buffer,
     layout::{Rect, Size},
@@ -13,6 +15,7 @@ use ratatui::{
 use tokio::{
     select,
     sync::mpsc::{Receiver, Sender},
+    time,
 };
 use tokio_util::sync::CancellationToken;
 use tui_scrollview::{ScrollView, ScrollViewState, ScrollbarVisibility};
@@ -42,30 +45,53 @@ impl TryFrom<(Patch, Sender<PatchResponse>)> for PatchRequest {
     }
 }
 
-#[derive(Debug, Clone)]
-enum InputState {
-    Interactive,
-    AcceptAll,
-    RejectAll,
+struct Requests {
+    peek: Option<PatchRequest>,
+    receiver: Receiver<PatchRequest>,
 }
 
-#[derive(Debug)]
+impl Requests {
+    fn pop(&mut self) -> Option<PatchRequest> {
+        let prev = self.peek.clone();
+        // if value waiting, pop it and make it peekable
+        if let Ok(req) = self.receiver.try_recv() {
+            self.peek = Some(req);
+            return prev;
+        }
+        // if no value waiting, set peek to none
+        self.peek = None;
+        prev
+    }
+
+    fn peek(&mut self) -> Option<&PatchRequest> {
+        if self.peek.is_some() {
+            return self.peek.as_ref();
+        }
+        // if value waiting, make it peekable
+        if let Ok(req) = self.receiver.try_recv() {
+            self.peek = Some(req)
+        }
+        self.peek.as_ref()
+    }
+}
+
 pub struct App {
-    submit_rx: Receiver<PatchRequest>,
-    active_patches: Option<PatchRequest>,
-    input_state: InputState,
+    requests: Requests,
     scroll_state: ScrollViewState,
     exit: bool,
+    frame_rate: f64,
 }
 
 impl App {
     pub fn new(submit_rx: Receiver<PatchRequest>) -> Self {
         App {
-            submit_rx,
-            active_patches: None,
-            input_state: InputState::Interactive,
+            requests: Requests {
+                peek: None,
+                receiver: submit_rx,
+            },
             scroll_state: ScrollViewState::new(),
             exit: false,
+            frame_rate: 30.0, // if it's good enough for TV, probably fine for me
         }
     }
 
@@ -90,8 +116,8 @@ impl App {
     /// updates the application's state based on user input
     async fn handle_events(&mut self, token: &CancellationToken) -> anyhow::Result<()> {
         let mut reader = EventStream::new();
+        let mut render_interval = time::interval(Duration::from_secs_f64(1.0 / self.frame_rate));
 
-        // TODO: switch on event::read + rx
         select! {
             event = reader.next() => {
                 if let Some(event) = event {
@@ -105,12 +131,7 @@ impl App {
                     }
                 }
             },
-            patch = self.submit_rx.recv() => {
-                if let Some(patch) = patch {
-                    info!("Recvd patch w/ metadata: {}", patch.metadata);
-                    self.handle_new_patch(patch).await;
-                }
-            },
+            _ = render_interval.tick() => {}
             _ = token.cancelled() => {
                 info!("Shutting down from signal");
                 self.exit = true;
@@ -160,7 +181,15 @@ impl App {
                 ..
             } => {
                 info!("accepting all remaining");
-                self.input_state = InputState::AcceptAll;
+                while let Some(req) = self.requests.pop() {
+                    let _ = req
+                        .response_chan
+                        .send(PatchResponse {
+                            status: Status::Accepted.into(),
+                        })
+                        .await;
+                }
+                self.exit = true;
             }
             KeyEvent {
                 code: KeyCode::Char('d'),
@@ -168,7 +197,15 @@ impl App {
                 ..
             } => {
                 info!("rejecting all remaining");
-                self.input_state = InputState::RejectAll;
+                while let Some(req) = self.requests.pop() {
+                    let _ = req
+                        .response_chan
+                        .send(PatchResponse {
+                            status: Status::Accepted.into(),
+                        })
+                        .await;
+                }
+                self.exit = true;
             }
             KeyEvent {
                 code: KeyCode::Char('k'),
@@ -216,47 +253,16 @@ impl App {
         }
     }
 
-    async fn handle_new_patch(&mut self, request: PatchRequest) {
-        match self.input_state {
-            InputState::Interactive => {
-                // WARN: this is insufficient for multiple clients. must support a peekable chan or
-                // something
-                self.active_patches = Some(request);
-                return;
-            }
-            // TODO: it's possible this doesn't need to be on the state and can just be a hotloop
-            // once this is set...
-            InputState::AcceptAll => {
-                let _ = request
-                    .response_chan
-                    .send(PatchResponse {
-                        status: Status::Accepted.into(),
-                    })
-                    .await;
-            }
-            InputState::RejectAll => {
-                let _ = request
-                    .response_chan
-                    .send(PatchResponse {
-                        status: Status::Rejected.into(),
-                    })
-                    .await;
-            }
-        }
-    }
-
     async fn handle_patch_response(&mut self, response: PatchResponse) {
-        // TODO: should we check the queue first?
         info!("handling patch reponse: {:?}", response);
-        let _ = self
-            .active_patches
-            .clone()
-            .expect("can't handle response w/o patch")
-            .response_chan
+        let req = self
+            .requests
+            .pop()
+            .expect("can't handle response w/o patch");
+        req.response_chan
             .send(response)
-            .await;
-        self.active_patches = None;
-        info!("active_patch is now None")
+            .await
+            .expect("should be able to respond");
     }
 
     fn exit(&mut self) {
@@ -266,7 +272,9 @@ impl App {
 
 impl Widget for &mut App {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let title = match self.active_patches {
+        let active = self.requests.peek();
+
+        let title = match active {
             None => Line::from(" Patchpal (waiting..) ".bold()),
             Some(_) => Line::from(" Patchpal ".bold()),
         };
@@ -297,7 +305,7 @@ impl Widget for &mut App {
             .title(title.centered())
             .title_bottom(instructions.centered());
 
-        if let Some(patch) = &self.active_patches {
+        if let Some(patch) = active {
             DiffWidget {
                 inner: &patch.patch_set,
                 metadata: &patch.metadata,
