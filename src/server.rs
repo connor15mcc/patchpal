@@ -3,7 +3,7 @@ use std::{env, io::Error as IoError, net::SocketAddr};
 use futures_util::{SinkExt, StreamExt};
 use log::{info, warn};
 use patchpal::{
-    models::patchpal::Patch,
+    models::Patch,
     tui::{self, PatchRequest},
 };
 use prost::Message as _;
@@ -36,7 +36,7 @@ async fn handle_connection(
                 match msg {
                     Some(Ok(Message::Binary(b))) => {
                         let patch = Patch::decode(b).unwrap();
-                        info!("Received a message from {}: {}", addr, patch.metadata);
+                        info!("Received a message from {}: {:?}", addr, patch.metadata);
                         let (response_tx, mut response_rx) = channel(1);
                         let request = PatchRequest::try_from((patch, response_tx)).expect("patches should all be valid");
                         tx.send(request).await.unwrap();

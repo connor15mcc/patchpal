@@ -21,12 +21,12 @@ use tokio_util::sync::CancellationToken;
 use tui_scrollview::{ScrollView, ScrollViewState, ScrollbarVisibility};
 use unidiff::PatchSet;
 
-use crate::models::patchpal::{patch_response::Status, Patch, PatchResponse};
+use crate::models::{patch_response::Status, Patch, PatchResponse};
 
 #[derive(Debug, Clone)]
 pub struct PatchRequest {
     pub patch_set: PatchSet,
-    pub metadata: String,
+    pub metadata: Option<String>,
     pub response_chan: Sender<PatchResponse>,
 }
 
@@ -308,7 +308,7 @@ impl Widget for &mut App {
         if let Some(patch) = active {
             DiffWidget {
                 inner: &patch.patch_set,
-                metadata: &patch.metadata,
+                metadata: patch.metadata.as_deref(),
             }
             .render(block.inner(area), buf, &mut self.scroll_state);
         }
@@ -319,14 +319,19 @@ impl Widget for &mut App {
 
 struct DiffWidget<'a> {
     inner: &'a PatchSet,
-    metadata: &'a str,
+    metadata: Option<&'a str>,
 }
 
 impl StatefulWidget for DiffWidget<'_> {
     type State = ScrollViewState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
-        let metadata = Paragraph::new(Line::from(vec!["Metadata: ".blue(), self.metadata.into()]));
+        let metadata = match self.metadata {
+            Some(metadata) => {
+                Paragraph::new(Line::from(vec!["Metadata: ".blue(), metadata.into()]))
+            }
+            None => Paragraph::default(),
+        };
 
         let mut patch_offset_y =
             area.top() + metadata.line_count(metadata.line_width() as u16) as u16;

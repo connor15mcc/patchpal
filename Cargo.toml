@@ -31,6 +31,12 @@ git2 = "0.20.0"
 stderrlog = "0.6.0"
 tui-scrollview = "0.5.1"
 unidiff = "0.3.3"
+clap = { version = "4.5.32", features = ["derive"] }
+regex = "1.11.1"
 
 [build-dependencies]
 prost-build = "0.13.0"
+
+[[bin]]
+name = "patchpal"
+path = "src/main.rs"

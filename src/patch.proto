@@ -4,7 +4,7 @@ package patchpal;
 
 message Patch {
 	string patch = 1;
-	string metadata = 2;
+	optional string metadata = 2;
 }
 
 message PatchResponse {
