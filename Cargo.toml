@@ -22,10 +22,7 @@ tokio = { version = "1.27.0", default-features = false, features = [
 	"sync",
 	"signal",
 ] }
-futures-channel = "0.3.31"
 prost = "0.13.5"
-cli-log = "2.1.0"
-indoc = "2.0.6"
 tokio-util = "0.7.14"
 git2 = "0.20.0"
 stderrlog = "0.6.0"
@@ -33,6 +30,7 @@ tui-scrollview = "0.5.1"
 unidiff = "0.3.3"
 clap = { version = "4.5.32", features = ["derive"] }
 regex = "1.11.1"
+simplelog = "0.12.2"
 
 [build-dependencies]
 prost-build = "0.13.0"
