@@ -57,7 +57,7 @@ impl Default for ClientMode {
 }
 
 #[derive(Args, Default, Debug)]
-#[group(id = "local", conflicts_with_all = ["branch_id", "repo"])]
+#[group(id = "local", conflicts_with_all = ["pr_number", "repo"])]
 pub struct LocalClientArgs {
     /// path to the repo
     // this 'C' short flag matches git's behavior for changing git repo path
@@ -66,11 +66,11 @@ pub struct LocalClientArgs {
 }
 
 #[derive(Args, Debug)]
-#[group(id = "github", requires_all = ["branch_id", "repo"])]
+#[group(id = "github", requires_all = ["pr_number", "repo"])]
 pub struct GithubClientArgs {
-    /// branch identifier (PR or name) that identifies a diff
-    #[command(flatten)]
-    pub branch_id: GithubBranchId,
+    /// branch identifier (PR number) that identifies a diff
+    #[arg(short = 'n', long, required = false)]
+    pub pr_number: u64,
 
     /// repo to check for a diff
     #[arg(short, long, value_parser = parse_repo, required = false)]
@@ -88,24 +88,6 @@ fn parse_repo(repo: &str) -> Result<String, clap::Error> {
             "Repo must be in the format 'owner/repo' with exactly one '/'",
         ))
     }
-}
-
-#[derive(Args, Debug)]
-#[group(id = "branch_id")]
-pub struct GithubBranchId {
-    /// identify by branch name
-    #[arg(
-        short,
-        long,
-        required = false,
-        conflicts_with = "path",
-        requires = "repo"
-    )]
-    pub branch_name: Option<String>,
-
-    /// identify by PR number
-    #[arg(short = 'n', long, required = false, conflicts_with_all = ["path", "branch_name"], requires = "repo")]
-    pub pr_number: Option<u32>,
 }
 
 #[cfg(test)]
@@ -127,11 +109,9 @@ mod tests {
         parses!("patchpal client");
         parses!("patchpal client METADATA");
         parses!("patchpal client --path ../bar");
-        parses!("patchpal client --repo foo/bar");
-        parses!("patchpal client --repo foo/bar METADATA");
         parses!("patchpal client --repo foo/bar --pr-number 123");
+        parses!("patchpal client --repo foo/bar --pr-number 123 METADATA");
         // ideally we could intuit the repo, but not yet:
-        // parses!("patchpal client --branch-name branchy");
         // parses!("patchpal client --pr-number 123");
     }
 
@@ -144,13 +124,9 @@ mod tests {
         }
         fails!("patchpal server client");
         fails!("patchpal server --path ../bar");
-        fails!("patchpal client --branch-name branchy --pr-number 123");
         fails!("patchpal client --path ../bar --repo foo/bar");
-        fails!("patchpal client --path ../bar --branch-name branchy");
-        fails!("patchpal client --path ../bar --repo foo/bar --branch-name branchy");
         fails!("patchpal client --path ../bar --repo foo/bar --pr-number 123");
         // ideally we could intuit the repo, but not yet:
-        fails!("patchpal client --branch-name branchy");
         fails!("patchpal client --pr-number 123");
     }
 }

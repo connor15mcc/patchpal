@@ -1,14 +1,15 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, process::Command};
 
-use anyhow::bail;
+use anyhow::{bail, Context};
 use futures_util::{SinkExt, StreamExt};
 use git2::Repository;
 use log::{debug, info, warn};
+use octocrab::Octocrab;
 use prost::Message as _;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use crate::{
-    args::{ClientMode, GithubBranchId, GithubClientArgs, LocalClientArgs},
+    args::{ClientMode, GithubClientArgs, LocalClientArgs},
     models::{patch_response::Status, Patch, PatchResponse},
 };
 
@@ -56,31 +57,21 @@ impl From<LocalClientArgs> for Local {
 
 #[derive(Clone, Debug)]
 struct Github {
+    owner: String,
     repo: String,
-    branch_id: BranchId,
+    pr: u64,
 }
 
 impl From<GithubClientArgs> for Github {
     fn from(args: GithubClientArgs) -> Self {
+        let (owner, repo) = args
+            .repo
+            .split_once("/")
+            .expect("was validated at CLI parsetime");
         Github {
-            repo: args.repo,
-            branch_id: args.branch_id.into(),
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-enum BranchId {
-    Name(String),
-    Number(u32),
-}
-
-impl From<GithubBranchId> for BranchId {
-    fn from(branch_id: GithubBranchId) -> Self {
-        match (branch_id.branch_name, branch_id.pr_number) {
-            (Some(branch_name), None) => BranchId::Name(branch_name),
-            (None, Some(pr_number)) => BranchId::Number(pr_number),
-            _ => unreachable!("asserted in args parsing"),
+            owner: owner.to_string(),
+            repo: repo.to_string(),
+            pr: args.pr_number,
         }
     }
 }
@@ -88,9 +79,9 @@ impl From<GithubBranchId> for BranchId {
 impl Client {
     pub async fn run(&self) -> anyhow::Result<()> {
         let unified_patch = match &self.mode {
-            Mode::Local(Local { .. }) => {
-                // Open the current directory as a git repository
-                let repo = Repository::open(".")?;
+            Mode::Local(Local { path }) => {
+                let absolute_path = std::env::current_dir()?.join(path);
+                let repo = Repository::open(absolute_path)?;
                 info!("Successfully opened git repository");
 
                 let index = repo.index()?;
@@ -123,12 +114,28 @@ impl Client {
                 }
                 diff_str
             }
-            Mode::Github(Github { .. }) => {
-                todo!()
+            Mode::Github(Github { owner, repo, pr }) => {
+                let gh_auth = Command::new("gh")
+                    .arg("auth")
+                    .arg("token")
+                    .output()
+                    .context("Couldn't use `gh` to auth. Make sure it's installed and auth'ed.")?;
+                let auth_token = String::from_utf8(gh_auth.stdout)?;
+                let auth_token = auth_token.trim();
+                debug!("fetched auth token");
+
+                let octocrab = Octocrab::builder().user_access_token(auth_token).build()?;
+                debug!("authed w/ github");
+                let diff = octocrab.pulls(owner, repo).get_patch(*pr).await?;
+                debug!("fetched pull request diff");
+                diff
             }
         };
 
-        let (ws_stream, _) = connect_async(SERVER_URL).await.expect("Failed to connect");
+        let (ws_stream, _) = connect_async(SERVER_URL)
+            .await
+            .context("(is the server listening?)")
+            .expect("Failed to connect");
         info!("WebSocket handshake has been successfully completed");
         let (mut ws_tx, mut ws_rx) = ws_stream.split();
         let patch = Patch {

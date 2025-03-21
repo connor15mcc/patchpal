@@ -31,6 +31,7 @@ unidiff = "0.3.3"
 clap = { version = "4.5.32", features = ["derive"] }
 regex = "1.11.1"
 simplelog = "0.12.2"
+octocrab = "0.43.0"
 
 [build-dependencies]
 prost-build = "0.13.0"

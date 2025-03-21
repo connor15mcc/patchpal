@@ -1,4 +1,4 @@
-use std::{env, io::Error as IoError, net::SocketAddr};
+use std::{io::Error as IoError, net::SocketAddr};
 
 use futures_util::{SinkExt, StreamExt};
 use log::{info, warn};
