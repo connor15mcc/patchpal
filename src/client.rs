@@ -25,7 +25,7 @@ impl From<ClientMode> for Client {
         let mode_enum = match (mode.local, mode.github) {
             (Some(local_args), None) => Mode::Local(local_args.into()),
             (None, Some(github_args)) => Mode::Github(github_args.into()),
-            _ => unreachable!("asserted in args parsing"),
+            _ => Mode::Local(Local::default()),
         };
 
         Client {
@@ -41,7 +41,7 @@ enum Mode {
     Github(Github),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 struct Local {
     path: PathBuf,
 }

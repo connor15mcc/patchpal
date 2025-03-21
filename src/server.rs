@@ -16,6 +16,8 @@ use crate::{
     tui::{self, PatchRequest},
 };
 
+const SERVER_URL: &str = "127.0.0.1:8443";
+
 pub struct Server;
 
 impl Server {
@@ -56,14 +58,10 @@ async fn run_patch_server(
     token: CancellationToken,
     tx: Sender<PatchRequest>,
 ) -> Result<(), IoError> {
-    let addr = env::args()
-        .nth(1)
-        .unwrap_or_else(|| "127.0.0.1:8443".to_string());
-
     // Create the event loop and TCP listener we'll accept connections on.
-    let try_socket = TcpListener::bind(&addr).await;
+    let try_socket = TcpListener::bind(&SERVER_URL).await;
     let listener = try_socket.expect("Failed to bind");
-    info!("Listening on: {}", addr);
+    info!("Listening on: {}", SERVER_URL);
 
     loop {
         tokio::select! {

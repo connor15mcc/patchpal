@@ -125,8 +125,10 @@ mod tests {
         parses!("patchpal server -v");
         parses!("patchpal server");
         parses!("patchpal client");
+        parses!("patchpal client METADATA");
         parses!("patchpal client --path ../bar");
         parses!("patchpal client --repo foo/bar");
+        parses!("patchpal client --repo foo/bar METADATA");
         parses!("patchpal client --repo foo/bar --pr-number 123");
         // ideally we could intuit the repo, but not yet:
         // parses!("patchpal client --branch-name branchy");
