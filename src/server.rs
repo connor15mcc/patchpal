@@ -2,10 +2,6 @@ use std::{env, io::Error as IoError, net::SocketAddr};
 
 use futures_util::{SinkExt, StreamExt};
 use log::{info, warn};
-use patchpal::{
-    models::Patch,
-    tui::{self, PatchRequest},
-};
 use prost::Message as _;
 use tokio::{
     net::{TcpListener, TcpStream},
@@ -14,6 +10,76 @@ use tokio::{
 };
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tokio_util::sync::CancellationToken;
+
+use crate::{
+    models::Patch,
+    tui::{self, PatchRequest},
+};
+
+pub struct Server;
+
+impl Server {
+    pub fn new() -> Self {
+        Server
+    }
+
+    pub async fn run(&self) -> anyhow::Result<()> {
+        let token = CancellationToken::new();
+        // arbitrarily decided: should think about this more
+        // can maybe even just use oneshot channel
+        let (tx, rx) = channel::<PatchRequest>(10);
+
+        let tui = tokio::spawn(run_tui(token.clone(), rx));
+        let patch = tokio::spawn(run_patch_server(token.clone(), tx));
+        // TODO: this should be a join since we want both to get a chance to shutdown gracefully
+        tokio::select! {
+            // ctrl_c is handled in TUI event loop bc of raw mode
+            //_ = token.cancelled() => {
+            //    info!("Token cancelled");
+            //},
+            _ = tui => {},
+            _ = patch => {},
+        }
+        Ok(())
+    }
+}
+
+async fn run_tui(token: CancellationToken, rx: Receiver<PatchRequest>) -> anyhow::Result<()> {
+    let mut terminal = ratatui::init();
+    let mut app = tui::App::new(rx);
+    app.run(&token, &mut terminal).await?;
+    token.cancel();
+    Ok(())
+}
+
+async fn run_patch_server(
+    token: CancellationToken,
+    tx: Sender<PatchRequest>,
+) -> Result<(), IoError> {
+    let addr = env::args()
+        .nth(1)
+        .unwrap_or_else(|| "127.0.0.1:8443".to_string());
+
+    // Create the event loop and TCP listener we'll accept connections on.
+    let try_socket = TcpListener::bind(&addr).await;
+    let listener = try_socket.expect("Failed to bind");
+    info!("Listening on: {}", addr);
+
+    loop {
+        tokio::select! {
+            cxn = listener.accept() => {
+                if let Ok((stream, addr)) = cxn {
+                    info!("Accepted listener as {}", addr);
+                    tokio::spawn(handle_connection(token.clone(), stream, addr, tx.clone()));
+                }
+            }
+            _ = token.cancelled() => {
+                info!("Shutting down from signal");
+                return Ok(())
+            }
+        }
+    }
+}
 
 async fn handle_connection(
     token: CancellationToken,
@@ -71,64 +137,4 @@ async fn handle_connection(
             }
         }
     }
-}
-
-async fn run_patch_server(
-    token: CancellationToken,
-    tx: Sender<PatchRequest>,
-) -> Result<(), IoError> {
-    let addr = env::args()
-        .nth(1)
-        .unwrap_or_else(|| "127.0.0.1:8443".to_string());
-
-    // Create the event loop and TCP listener we'll accept connections on.
-    let try_socket = TcpListener::bind(&addr).await;
-    let listener = try_socket.expect("Failed to bind");
-    info!("Listening on: {}", addr);
-
-    loop {
-        tokio::select! {
-            cxn = listener.accept() => {
-                if let Ok((stream, addr)) = cxn {
-                    info!("Accepted listener as {}", addr);
-                    tokio::spawn(handle_connection(token.clone(), stream, addr, tx.clone()));
-                }
-            }
-            _ = token.cancelled() => {
-                info!("Shutting down from signal");
-                return Ok(())
-            }
-        }
-    }
-}
-
-async fn run_tui(token: CancellationToken, rx: Receiver<PatchRequest>) -> anyhow::Result<()> {
-    let mut terminal = ratatui::init();
-    let mut app = tui::App::new(rx);
-    app.run(&token, &mut terminal).await?;
-    token.cancel();
-    Ok(())
-}
-
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    cli_log::init_cli_log!();
-
-    let token = CancellationToken::new();
-    // arbitrarily decided: should think about this more
-    // can maybe even just use oneshot channel
-    let (tx, rx) = channel::<PatchRequest>(10);
-
-    let tui = tokio::spawn(run_tui(token.clone(), rx));
-    let patch = tokio::spawn(run_patch_server(token.clone(), tx));
-    // TODO: this should be a join since we want both to get a chance to shutdown gracefully
-    tokio::select! {
-        // ctrl_c is handled in TUI event loop bc of raw mode
-        //_ = token.cancelled() => {
-        //    info!("Token cancelled");
-        //},
-        _ = tui => {},
-        _ = patch => {},
-    }
-    Ok(())
 }

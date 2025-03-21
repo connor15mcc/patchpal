@@ -4,9 +4,13 @@ use anyhow::bail;
 use futures_util::{SinkExt, StreamExt};
 use git2::Repository;
 use log::{debug, info, warn};
-use patchpal::models::{patch_response::Status, Patch, PatchResponse};
 use prost::Message as _;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
+
+use crate::{
+    args::{ClientMode, GithubBranchId, GithubClientArgs, LocalClientArgs},
+    models::{patch_response::Status, Patch, PatchResponse},
+};
 
 const SERVER_URL: &str = "ws://127.0.0.1:8443";
 
@@ -16,7 +20,20 @@ pub struct Client {
     metadata: Option<String>,
 }
 
-// TODO impl Into / From
+impl From<ClientMode> for Client {
+    fn from(mode: ClientMode) -> Self {
+        let mode_enum = match (mode.local, mode.github) {
+            (Some(local_args), None) => Mode::Local(local_args.into()),
+            (None, Some(github_args)) => Mode::Github(github_args.into()),
+            _ => unreachable!("asserted in args parsing"),
+        };
+
+        Client {
+            mode: mode_enum,
+            metadata: mode.metadata,
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 enum Mode {
@@ -29,10 +46,27 @@ struct Local {
     path: PathBuf,
 }
 
+impl From<LocalClientArgs> for Local {
+    fn from(args: LocalClientArgs) -> Self {
+        Local {
+            path: args.path.unwrap_or(".".into()),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct Github {
     repo: String,
     branch_id: BranchId,
+}
+
+impl From<GithubClientArgs> for Github {
+    fn from(args: GithubClientArgs) -> Self {
+        Github {
+            repo: args.repo,
+            branch_id: args.branch_id.into(),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -41,8 +75,18 @@ enum BranchId {
     Number(u32),
 }
 
+impl From<GithubBranchId> for BranchId {
+    fn from(branch_id: GithubBranchId) -> Self {
+        match (branch_id.branch_name, branch_id.pr_number) {
+            (Some(branch_name), None) => BranchId::Name(branch_name),
+            (None, Some(pr_number)) => BranchId::Number(pr_number),
+            _ => unreachable!("asserted in args parsing"),
+        }
+    }
+}
+
 impl Client {
-    async fn run(&self) -> anyhow::Result<()> {
+    pub async fn run(&self) -> anyhow::Result<()> {
         let unified_patch = match &self.mode {
             Mode::Local(Local { .. }) => {
                 // Open the current directory as a git repository

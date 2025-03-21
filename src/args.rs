@@ -70,11 +70,11 @@ pub struct LocalClientArgs {
 pub struct GithubClientArgs {
     /// branch identifier (PR or name) that identifies a diff
     #[command(flatten)]
-    pub branch_id: GithubBranchID,
+    pub branch_id: GithubBranchId,
 
     /// repo to check for a diff
     #[arg(short, long, value_parser = parse_repo, required = false)]
-    pub repo: Option<String>,
+    pub repo: String,
 }
 
 /// Custom parser to ensure the repo string is in the format 'owner/repo'
@@ -92,13 +92,19 @@ fn parse_repo(repo: &str) -> Result<String, clap::Error> {
 
 #[derive(Args, Debug)]
 #[group(id = "branch_id")]
-pub struct GithubBranchID {
+pub struct GithubBranchId {
     /// identify by branch name
-    #[arg(short, long, required = false, conflicts_with = "path")]
+    #[arg(
+        short,
+        long,
+        required = false,
+        conflicts_with = "path",
+        requires = "repo"
+    )]
     pub branch_name: Option<String>,
 
     /// identify by PR number
-    #[arg(short = 'n', long, required = false, conflicts_with_all = ["path", "branch_name"])]
+    #[arg(short = 'n', long, required = false, conflicts_with_all = ["path", "branch_name"], requires = "repo")]
     pub pr_number: Option<u32>,
 }
 
@@ -120,10 +126,11 @@ mod tests {
         parses!("patchpal server");
         parses!("patchpal client");
         parses!("patchpal client --path ../bar");
-        parses!("patchpal client --branch-name branchy");
-        parses!("patchpal client --pr-number 123");
         parses!("patchpal client --repo foo/bar");
         parses!("patchpal client --repo foo/bar --pr-number 123");
+        // ideally we could intuit the repo, but not yet:
+        // parses!("patchpal client --branch-name branchy");
+        // parses!("patchpal client --pr-number 123");
     }
 
     #[test]
@@ -140,5 +147,8 @@ mod tests {
         fails!("patchpal client --path ../bar --branch-name branchy");
         fails!("patchpal client --path ../bar --repo foo/bar --branch-name branchy");
         fails!("patchpal client --path ../bar --repo foo/bar --pr-number 123");
+        // ideally we could intuit the repo, but not yet:
+        fails!("patchpal client --branch-name branchy");
+        fails!("patchpal client --pr-number 123");
     }
 }
