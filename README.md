@@ -10,6 +10,38 @@ server, where they can be reviewed and either accepted or rejected. This is
 particularly useful for managing large-scale changes across multiple
 repositories.
 
+## Usage
+
+```
+❯ patchpal help
+
+Commands:
+  client  run the patchpal client
+  server  run the patchpal server
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+  -v, --verbose...  enable additional log information
+  -h, --help        Print help
+  -V, --version     Print version
+```
+
+```
+❯ patchpal help client
+
+Usage: patchpal client [OPTIONS] [METADATA]
+
+Arguments:
+  [METADATA]  enable additional log information
+
+Options:
+  -C, --path <PATH>            path to the repo
+  -v, --verbose...             enable additional log information
+  -n, --pr-number <PR_NUMBER>  branch identifier (PR number) that identifies a diff
+  -r, --repo <REPO>            repo to check for a diff
+  -h, --help                   Print help
+```
+
 ## Installation
 
 To build and run PatchPal, you need to have Cargo & `protobuf` installed.
